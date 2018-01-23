@@ -15,7 +15,7 @@ import numpy as np
 import cv2
 
 from mask_rcnn.util.config import Config
-import mask_rcnn.util.utils
+from mask_rcnn.util import utils
 
 
 class ShapesConfig(Config):
