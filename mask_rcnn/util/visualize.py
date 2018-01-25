@@ -75,7 +75,7 @@ def apply_mask(image, mask, color, alpha=0.5):
 
 def display_instances(image, boxes, masks, class_ids, class_names,
                       scores=None, title="",
-                      figsize=(16, 16), ax=None):
+                      figsize=(16, 16), ax=None, save_path=''):
     """
     boxes: [num_instance, (y1, x1, y2, x2, class_id)] in image coordinates.
     masks: [height, width, num_instances]
@@ -91,16 +91,23 @@ def display_instances(image, boxes, masks, class_ids, class_names,
     else:
         assert boxes.shape[0] == masks.shape[-1] == class_ids.shape[0]
 
+    fig = plt.figure(frameon=False)
+    fig.set_size_inches(figsize[0], figsize[1])
     if not ax:
-        _, ax = plt.subplots(1, figsize=figsize)
+        ax = plt.Axes(fig, [0., 0., 1., 1.])
+        ax.set_axis_off()
+        fig.add_axes(ax)
+
 
     # Generate random colors
     colors = random_colors(N)
 
     # Show area outside image boundaries.
     height, width = image.shape[:2]
-    ax.set_ylim(height + 10, -10)
-    ax.set_xlim(-10, width + 10)
+    needed_dpi = width / figsize[1]
+    print(f'setting shape to: {height}x{width}')
+    ax.set_ylim(height, 0)
+    ax.set_xlim(0, width)
     ax.axis('off')
     ax.set_title(title)
 
@@ -142,7 +149,13 @@ def display_instances(image, boxes, masks, class_ids, class_names,
             verts = np.fliplr(verts) - 1
             p = Polygon(verts, facecolor="none", edgecolor=color)
             ax.add_patch(p)
-    ax.imshow(masked_image.astype(np.uint8))
+
+    plt.gca().get_xaxis().set_visible(False)
+    plt.gca().get_yaxis().set_visible(False)
+
+    ax.imshow(masked_image.astype(np.uint8), aspect='equal')
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0, dpi=needed_dpi)
     plt.show()
     
 
