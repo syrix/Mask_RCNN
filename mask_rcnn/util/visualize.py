@@ -157,6 +157,7 @@ def display_instances(image, boxes, masks, class_ids, class_names,
     if save_path:
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0, dpi=needed_dpi)
     plt.show()
+    plt.close()
     
 
 def draw_rois(image, rois, refined_rois, mask, class_ids, class_names, limit=10):
