@@ -29,6 +29,7 @@ import keras.engine as KE
 import keras.models as KM
 
 from mask_rcnn.util import utils
+from mask_rcnn.model.metrics_callback import MetricsCallback
 
 # Requires TensorFlow 1.3+ and Keras 2.0.8+.
 from distutils.version import LooseVersion
@@ -851,11 +852,10 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
 #  Feature Pyramid Network Heads
 ############################################################
 
-def fpn_classifier_graph(rois, feature_maps,
-                         image_shape, pool_size, num_classes):
+
+def build_fpn_classifier_model(config, mrcnn_feature_maps):
     """Builds the computation graph of the feature pyramid network classifier
     and regressor heads.
-
     rois: [batch, num_rois, (y1, x1, y2, x2)] Proposal boxes in normalized
           coordinates.
     feature_maps: List of feature maps from diffent layers of the pyramid,
@@ -863,13 +863,24 @@ def fpn_classifier_graph(rois, feature_maps,
     image_shape: [height, width, depth]
     pool_size: The width of the square feature map generated from ROI Pooling.
     num_classes: number of classes, which determines the depth of the results
-
     Returns:
         logits: [N, NUM_CLASSES] classifier logits (before softmax)
         probs: [N, NUM_CLASSES] classifier probabilities
         bbox_deltas: [N, (dy, dx, log(dh), log(dw))] Deltas to apply to
                      proposal boxes
     """
+    image_shape = config.IMAGE_SHAPE
+    pool_size = config.POOL_SIZE
+    num_classes = config.NUM_CLASSES
+
+    rois = KL.Input(shape=[None, None], name='input_mrcnn_class_rois')
+    feature_maps = []
+    for i, feature_map in enumerate(mrcnn_feature_maps):
+        shapes = feature_map.shape[1:]
+        shapes = [shape.value for shape in shapes]
+        feature_map_input = KL.Input(shape=shapes, name=f'input_mrcnn_class_feature_map{i}')
+        feature_maps.append(feature_map_input)
+
     # ROI Pooling
     # Shape: [batch, num_boxes, pool_height, pool_width, channels]
     x = PyramidROIAlign([pool_size, pool_size], image_shape,
@@ -900,9 +911,10 @@ def fpn_classifier_graph(rois, feature_maps,
                            name='mrcnn_bbox_fc')(shared)
     # Reshape to [batch, boxes, num_classes, (dy, dx, log(dh), log(dw))]
     s = K.int_shape(x)
-    mrcnn_bbox = KL.Reshape((s[1], num_classes, 4), name="mrcnn_bbox")(x)
+    mrcnn_bbox = KL.Reshape((-1, num_classes, 4), name="mrcnn_bbox")(x)
 
-    return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
+    outputs = [mrcnn_class_logits, mrcnn_probs, mrcnn_bbox]
+    return KM.Model([rois] + feature_maps, outputs, name='fpn_class_model')
 
 
 def build_fpn_mask_graph(rois, feature_maps,
@@ -911,7 +923,7 @@ def build_fpn_mask_graph(rois, feature_maps,
 
     rois: [batch, num_rois, (y1, x1, y2, x2)] Proposal boxes in normalized
           coordinates.
-    feature_maps: List of feature maps from diffent layers of the pyramid,
+    feature_maps: List of feature maps from different layers of the pyramid,
                   [P2, P3, P4, P5]. Each has a different resolution.
     image_shape: [height, width, depth]
     pool_size: The width of the square feature map generated from ROI Pooling.
@@ -922,37 +934,37 @@ def build_fpn_mask_graph(rois, feature_maps,
     # ROI Pooling
     # Shape: [batch, boxes, pool_height, pool_width, channels]
     x = PyramidROIAlign([pool_size, pool_size], image_shape,
-                        name="roi_align_mask")([rois] + feature_maps)
+                        name='roi_align_mask')([rois] + feature_maps)
 
     # Conv layers
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
-                           name="mrcnn_mask_conv1")(x)
+                           name='mrcnn_mask_conv1')(x)
     x = KL.TimeDistributed(BatchNorm(axis=3),
                            name='mrcnn_mask_bn1')(x)
     x = KL.Activation('relu')(x)
 
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
-                           name="mrcnn_mask_conv2")(x)
+                           name='mrcnn_mask_conv2')(x)
     x = KL.TimeDistributed(BatchNorm(axis=3),
                            name='mrcnn_mask_bn2')(x)
     x = KL.Activation('relu')(x)
 
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
-                           name="mrcnn_mask_conv3")(x)
+                           name='mrcnn_mask_conv3')(x)
     x = KL.TimeDistributed(BatchNorm(axis=3),
                            name='mrcnn_mask_bn3')(x)
     x = KL.Activation('relu')(x)
 
     x = KL.TimeDistributed(KL.Conv2D(256, (3, 3), padding="same"),
-                           name="mrcnn_mask_conv4")(x)
+                           name='mrcnn_mask_conv4')(x)
     x = KL.TimeDistributed(BatchNorm(axis=3),
                            name='mrcnn_mask_bn4')(x)
     x = KL.Activation('relu')(x)
 
     x = KL.TimeDistributed(KL.Conv2DTranspose(256, (2, 2), strides=2, activation="relu"),
-                           name="mrcnn_mask_deconv")(x)
+                           name='mrcnn_mask_deconv')(x)
     x = KL.TimeDistributed(KL.Conv2D(num_classes, (1, 1), strides=1, activation="sigmoid"),
-                           name="mrcnn_mask")(x)
+                           name='mrcnn_mask')(x)
     return x
 
 
@@ -1876,9 +1888,10 @@ class MaskRCNN():
 
             # Network Heads
             # TODO: verify that this handles zero padded ROIs
-            mrcnn_class_logits, mrcnn_class, mrcnn_bbox =\
-                fpn_classifier_graph(rois, mrcnn_feature_maps, config.IMAGE_SHAPE,
-                                     config.POOL_SIZE, config.NUM_CLASSES)
+
+            fpn_classifier_graph = build_fpn_classifier_model(config, mrcnn_feature_maps)
+            mrcnn_class_logits, mrcnn_class, mrcnn_bbox = \
+                fpn_classifier_graph([rois] + mrcnn_feature_maps)
 
             mrcnn_mask = build_fpn_mask_graph(rois, mrcnn_feature_maps,
                                               config.IMAGE_SHAPE,
@@ -1901,21 +1914,49 @@ class MaskRCNN():
                 [target_mask, target_class_ids, mrcnn_mask])
 
             # Model
+
+            # Inputs
             inputs = [input_image, input_image_meta,
                       input_rpn_match, input_rpn_bbox, input_gt_class_ids, input_gt_boxes, input_gt_masks]
             if not config.USE_RPN_ROIS:
                 inputs.append(input_rois)
+
+            # Extra Network Heads for inference
+            # Proposal classifier and BBox regressor heads
+            _, mrcnn_class_pred, mrcnn_bbox_pred = \
+                fpn_classifier_graph([rpn_rois] + mrcnn_feature_maps)
+
+            # Detections
+            # output is [batch, num_detections, (y1, x1, y2, x2, class_id, score)] in image coordinates
+            detections = DetectionLayer(config, name="mrcnn_detection")(
+                [rpn_rois, mrcnn_class_pred, mrcnn_bbox_pred, input_image_meta])
+
+            # Convert boxes to normalized coordinates
+            # TODO: let DetectionLayer return normalized coordinates to avoid unnecessary conversions
+            h, w = config.IMAGE_SHAPE[:2]
+            detection_boxes = KL.Lambda(
+                lambda x: x[..., :4] / np.array([h, w, h, w]))(detections)
+
+            # Create masks for detections
+            # TODO reuse graph and also output mrcnn_mask_pred
+            mrcnn_mask_pred = build_fpn_mask_graph(detection_boxes, mrcnn_feature_maps,
+                                                   config.IMAGE_SHAPE,
+                                                   config.MASK_POOL_SIZE,
+                                                   config.NUM_CLASSES)
+
+            # Outputs
             outputs = [rpn_class_logits, rpn_class, rpn_bbox,
                        mrcnn_class_logits, mrcnn_class, mrcnn_bbox, mrcnn_mask,
                        rpn_rois, output_rois,
-                       rpn_class_loss, rpn_bbox_loss, class_loss, bbox_loss, mask_loss]
+                       rpn_class_loss, rpn_bbox_loss, class_loss, bbox_loss, mask_loss,
+                       detections]
             model = KM.Model(inputs, outputs, name='mask_rcnn')
         else:
             # Network Heads
             # Proposal classifier and BBox regressor heads
+            fpn_classifier_graph = build_fpn_classifier_model(config, mrcnn_feature_maps)
             mrcnn_class_logits, mrcnn_class, mrcnn_bbox =\
-                fpn_classifier_graph(rpn_rois, mrcnn_feature_maps, config.IMAGE_SHAPE,
-                                     config.POOL_SIZE, config.NUM_CLASSES)
+                fpn_classifier_graph([rpn_rois] + mrcnn_feature_maps)
 
             # Detections
             # output is [batch, num_detections, (y1, x1, y2, x2, class_id, score)] in image coordinates
@@ -2052,8 +2093,8 @@ class MaskRCNN():
         self.keras_model.add_loss(tf.add_n(reg_losses))
 
         # Compile
-        self.keras_model.compile(optimizer=optimizer, loss=[
-                                 None] * len(self.keras_model.outputs))
+        self.keras_model.compile(optimizer=optimizer,
+                                 loss=[None] * len(self.keras_model.outputs))
 
         # Add metrics for losses
         for name in loss_names:
@@ -2175,12 +2216,17 @@ class MaskRCNN():
                                        batch_size=self.config.BATCH_SIZE,
                                        augment=False)
 
+        metric_val_generator = data_generator(val_dataset, self.config, shuffle=True,
+                                              batch_size=self.config.BATCH_SIZE,
+                                              augment=False, detection_targets=True)
+
         # Callbacks
         callbacks = [
+            MetricsCallback(self.config, metric_val_generator),
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
-                                            verbose=0, save_weights_only=True),
+                                            verbose=0, save_weights_only=True)
         ]
 
         # Train
@@ -2195,7 +2241,7 @@ class MaskRCNN():
         if os.name is 'nt':
             workers = 0
         else:
-            workers = max(self.config.BATCH_SIZE // 2, 2)
+            workers = max(self.config.BATCH_SIZE // 2, self.config.NUM_WORKERS)
 
         self.keras_model.fit_generator(
             train_generator,
@@ -2322,8 +2368,7 @@ class MaskRCNN():
         masks: [H, W, N] instance binary masks
         """
         assert self.mode == "inference", "Create model in inference mode."
-        assert len(
-            images) == self.config.BATCH_SIZE, "len(images) must be equal to BATCH_SIZE"
+        assert len(images) == self.config.BATCH_SIZE, "len(images) must be equal to BATCH_SIZE"
 
         if verbose:
             log("Processing {} images".format(len(images)))

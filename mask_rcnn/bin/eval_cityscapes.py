@@ -42,7 +42,7 @@ class CityscapesConfig(Config):
     IMAGES_PER_GPU = 2
 
     # Number of classes (including background)
-    NUM_CLASSES = 20 + 1  # background + actual classes
+    NUM_CLASSES = 8 + 1  # background + actual classes
 
     # Use small images for faster training. Set the limits of the small side
     # the large side, and that determines the image shape.
@@ -52,10 +52,10 @@ class CityscapesConfig(Config):
     MEAN_PIXEL = np.array((72.78044, 83.21195, 73.45286))
 
     # Use a small epoch since the data is simple
-    STEPS_PER_EPOCH = 1000  # TODO
+    STEPS_PER_EPOCH = 100  # TODO
 
     # use small validation steps since the epoch is small
-    VALIDATION_STEPS = 25  # TODO
+    VALIDATION_STEPS = 2  # TODO
 
 
 config = CityscapesConfig()
@@ -359,7 +359,7 @@ elif init_with == "last":
 # Passing layers="heads" freezes all layers except the head
 # layers. You can also pass a regular expression to select
 # which layers to train by name pattern.
-num_epochs = 8  # TODO
+num_epochs = 1  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE,
             epochs=num_epochs,
@@ -371,7 +371,7 @@ model.train(dataset_train, dataset_val,
 # Passing layers="all" trains all layers. You can also
 # pass a regular expression to select which layers to
 # train by name pattern.
-num_epochs = 16  # TODO
+num_epochs = 2  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE / 10,
             epochs=num_epochs,
@@ -382,7 +382,7 @@ model.train(dataset_train, dataset_val,
 # Save weights
 # Typically not needed because callbacks save after every epoch
 # Uncomment to save manually
-model_path = os.path.join(MODEL_DIR, "mask_rcnn_cityscapes_eval_3.h5")
+model_path = os.path.join(MODEL_DIR, "mask_rcnn_cityscapes_eval.h5")
 model.keras_model.save_weights(model_path)
 
 
