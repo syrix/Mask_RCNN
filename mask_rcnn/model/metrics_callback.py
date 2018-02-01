@@ -1,6 +1,6 @@
-import logging
 from operator import attrgetter
 import time
+import math
 
 import keras
 import numpy as np
@@ -8,17 +8,23 @@ from recordclass import recordclass
 
 
 class MetricsCallback(keras.callbacks.Callback):
-    def __init__(self, config, validation_generator):
+    def __init__(self, config, generate_validation_generator, num_images):
         super(keras.callbacks.Callback, self).__init__()
 
         self.num_classes = config.NUM_CLASSES
-        self.validation_steps = config.VALIDATION_STEPS
-        self.validation_generator = validation_generator
+        self.generate_validation_generator = generate_validation_generator
+
+        batch_size = config.BATCH_SIZE
+        num_images = min(num_images, config.MAX_METRICS_IMAGES)
+        self.num_steps = math.ceil(num_images / batch_size)
+        print(f'Creating metrics callback for {self.num_steps * batch_size} validation images.')
 
     def on_epoch_end(self, epoch, logs={}):
         metrics = Metrics(self.num_classes)
-        for _ in range(self.validation_steps):
-            inputs, outputs = self.validation_generator.__next__()
+        generator = self.generate_validation_generator()
+
+        for _ in range(self.num_steps):
+            inputs, outputs = generator.__next__()
 
             images = inputs[0]
             image_meta = inputs[1]

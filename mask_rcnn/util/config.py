@@ -52,6 +52,9 @@ class Config(object):
     # down the training.
     VALIDATION_STEPS = 50
 
+    # The maximum number of images used to calculate metrics at the end of an epoch
+    MAX_METRICS_IMAGES = 300
+
     # The strides of each layer of the FPN Pyramid. These values
     # are based on a Resnet101 backbone.
     BACKBONE_STRIDES = [4, 8, 16, 32, 64]

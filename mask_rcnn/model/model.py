@@ -1601,7 +1601,7 @@ def data_generator(dataset, config, shuffle=True, augment=True, random_rois=0,
                                              config.BACKBONE_STRIDES,
                                              config.RPN_ANCHOR_STRIDE)
 
-    # Keras requires a generator to run indefinately.
+    # Keras requires a generator to run indefinitely.
     while True:
         try:
             # Increment index to pick next image. Shuffle if at the start of an epoch.
@@ -2065,13 +2065,24 @@ class MaskRCNN():
                                 md5_hash='a268eb855778b3df3c7506639542a6af')
         return weights_path
 
-    def compile(self, learning_rate, momentum):
+    def compile(self, learning_rate, momentum, optimizer_type):
         """Gets the model ready for training. Adds losses, regularization, and
         metrics. Then calls the Keras compile() function.
         """
+        optimizer = keras.optimizers.SGD(lr=learning_rate, momentum=momentum, clipnorm=5.0)  # TODO
+        allowed_optimizer_types = ['sgd', 'rmsprop', 'adam']
+        assert optimizer_type in allowed_optimizer_types,\
+            f'Invalid optimizer {optimizer_type}. Valid: {allowed_optimizer_types}'
+
         # Optimizer object
-        optimizer = keras.optimizers.SGD(lr=learning_rate, momentum=momentum,
-                                         clipnorm=5.0)
+        if optimizer_type == 'sgd':
+            optimizer = keras.optimizers.SGD(lr=learning_rate, momentum=momentum, clipnorm=5.0)
+        elif optimizer_type == 'rmsprop':
+            optimizer = keras.optimizers.RMSprop(lr=learning_rate, epsilon=1e-8, clipnorm=5.0)
+        elif optimizer_type == 'adam':
+            optimizer = keras.optimizers.Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999,
+                                              epsilon=1e-1, decay=0., clipnorm=5.0)
+
         # Add Losses
         # First, clear previously set losses to avoid duplication
         self.keras_model._losses = []
@@ -2176,7 +2187,7 @@ class MaskRCNN():
         self.checkpoint_path = self.checkpoint_path.replace(
             "*epoch*", "{epoch:04d}")
 
-    def train(self, train_dataset, val_dataset, learning_rate, epochs, layers):
+    def train(self, train_dataset, val_dataset, learning_rate, epochs, layers, optimizer_type='sgd'):
         """Train the model.
         train_dataset, val_dataset: Training and validation Dataset objects.
         learning_rate: The learning rate to train with
@@ -2216,13 +2227,14 @@ class MaskRCNN():
                                        batch_size=self.config.BATCH_SIZE,
                                        augment=False)
 
-        metric_val_generator = data_generator(val_dataset, self.config, shuffle=True,
-                                              batch_size=self.config.BATCH_SIZE,
-                                              augment=False, detection_targets=True)
+        def generate_metric_val_generator():
+            return data_generator(val_dataset, self.config, shuffle=False,
+                                  batch_size=self.config.BATCH_SIZE,
+                                  augment=False, detection_targets=True)
 
         # Callbacks
         callbacks = [
-            MetricsCallback(self.config, metric_val_generator),
+            MetricsCallback(self.config, generate_metric_val_generator, len(val_dataset.image_ids)),
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
@@ -2233,7 +2245,7 @@ class MaskRCNN():
         log("\nStarting at epoch {}. LR={}\n".format(self.epoch, learning_rate))
         log("Checkpoint Path: {}".format(self.checkpoint_path))
         self.set_trainable(layers)
-        self.compile(learning_rate, self.config.LEARNING_MOMENTUM)
+        self.compile(learning_rate, self.config.LEARNING_MOMENTUM, optimizer_type)
 
         # Work-around for Windows: Keras fails on Windows when using
         # multiprocessing workers. See discussion here:
