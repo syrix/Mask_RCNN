@@ -2065,23 +2065,26 @@ class MaskRCNN():
                                 md5_hash='a268eb855778b3df3c7506639542a6af')
         return weights_path
 
-    def compile(self, learning_rate, momentum, optimizer_type):
+    def compile(self, learning_rate, optimizer_type):
         """Gets the model ready for training. Adds losses, regularization, and
         metrics. Then calls the Keras compile() function.
         """
-        optimizer = keras.optimizers.SGD(lr=learning_rate, momentum=momentum, clipnorm=5.0)  # TODO
+        optimizer = keras.optimizers.SGD(lr=learning_rate, momentum=self.config.LEARNING_MOMENTUM, clipnorm=5.0)  # TODO
         allowed_optimizer_types = ['sgd', 'rmsprop', 'adam']
         assert optimizer_type in allowed_optimizer_types,\
             f'Invalid optimizer {optimizer_type}. Valid: {allowed_optimizer_types}'
 
         # Optimizer object
         if optimizer_type == 'sgd':
-            optimizer = keras.optimizers.SGD(lr=learning_rate, momentum=momentum, clipnorm=5.0)
+            optimizer = keras.optimizers.SGD(lr=learning_rate, momentum=self.config.LEARNING_MOMENTUM, clipnorm=5.0)
         elif optimizer_type == 'rmsprop':
-            optimizer = keras.optimizers.RMSprop(lr=learning_rate, epsilon=1e-8, clipnorm=5.0)
+            optimizer = keras.optimizers.RMSprop(lr=learning_rate, epsilon=self.config.LEARNING_RMS_PROP_EPSILON,
+                                                 clipnorm=5.0)
         elif optimizer_type == 'adam':
-            optimizer = keras.optimizers.Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999,
-                                              epsilon=1e-1, decay=0., clipnorm=5.0)
+            optimizer = keras.optimizers.Adam(lr=learning_rate, beta_1=self.config.LEARNING_ADAM_BETA_1,
+                                              beta_2=self.config.LEARNING_ADAM_BETA_2,
+                                              epsilon=self.config.LEARNING_ADAM_EPSILON,
+                                              decay=0., clipnorm=5.0)
 
         # Add Losses
         # First, clear previously set losses to avoid duplication
@@ -2245,7 +2248,7 @@ class MaskRCNN():
         log("\nStarting at epoch {}. LR={}\n".format(self.epoch, learning_rate))
         log("Checkpoint Path: {}".format(self.checkpoint_path))
         self.set_trainable(layers)
-        self.compile(learning_rate, self.config.LEARNING_MOMENTUM, optimizer_type)
+        self.compile(learning_rate, optimizer_type)
 
         # Work-around for Windows: Keras fails on Windows when using
         # multiprocessing workers. See discussion here:

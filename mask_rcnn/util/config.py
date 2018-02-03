@@ -139,7 +139,14 @@ class Config(object):
     # weights to explode. Likely due to differences in optimzer
     # implementation.
     LEARNING_RATE = 0.001
+    # SGD
     LEARNING_MOMENTUM = 0.9
+    # RMS prop
+    LEARNING_RMS_PROP_EPSILON = 1e-1
+    # Adam
+    LEARNING_ADAM_BETA_1 = 0.9
+    LEARNING_ADAM_BETA_2 = 0.999
+    LEARNING_ADAM_EPSILON = 1e-1
 
     # Weight decay regularization
     WEIGHT_DECAY = 0.0001
