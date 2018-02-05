@@ -755,7 +755,7 @@ class DetectionLayer(KE.Layer):
         def wrapper(rois, mrcnn_class, mrcnn_bbox, image_meta):
             detections_batch = []
             _, _, window, _ = parse_image_meta(image_meta)
-            for b in range(self.config.BATCH_SIZE):
+            for b in range(self.config.IMAGES_PER_GPU):
                 detections = refine_detections(
                     rois[b], mrcnn_class[b], mrcnn_bbox[b], window[b], self.config)
                 # Pad with zeros if detections < DETECTION_MAX_INSTANCES
@@ -771,10 +771,12 @@ class DetectionLayer(KE.Layer):
             detections_batch = np.array(detections_batch).astype(np.float32)
             # Reshape output
             # [batch, num_detections, (y1, x1, y2, x2, class_score)] in pixels
-            return np.reshape(detections_batch, [self.config.BATCH_SIZE, self.config.DETECTION_MAX_INSTANCES, 6])
+            return np.reshape(detections_batch, [self.config.IMAGES_PER_GPU, self.config.DETECTION_MAX_INSTANCES, 6])
 
         # Return wrapped function
-        return tf.py_func(wrapper, inputs, tf.float32)
+        result = tf.py_func(wrapper, inputs, tf.float32)
+        result.set_shape((None, self.config.DETECTION_MAX_INSTANCES, 6, ))
+        return result
 
     def compute_output_shape(self, input_shape):
         return (None, self.config.DETECTION_MAX_INSTANCES, 6)
@@ -910,7 +912,6 @@ def build_fpn_classifier_model(config, mrcnn_feature_maps):
     x = KL.TimeDistributed(KL.Dense(num_classes * 4, activation='linear'),
                            name='mrcnn_bbox_fc')(shared)
     # Reshape to [batch, boxes, num_classes, (dy, dx, log(dh), log(dw))]
-    s = K.int_shape(x)
     mrcnn_bbox = KL.Reshape((-1, num_classes, 4), name="mrcnn_bbox")(x)
 
     outputs = [mrcnn_class_logits, mrcnn_probs, mrcnn_bbox]
@@ -1833,6 +1834,9 @@ class MaskRCNN():
                                                       config.BACKBONE_STRIDES,
                                                       config.RPN_ANCHOR_STRIDE)
 
+        # FPN classifier
+        fpn_classifier_graph = build_fpn_classifier_model(config, mrcnn_feature_maps)
+
         # RPN Model
         rpn = build_rpn_model(config.RPN_ANCHOR_STRIDE,
                               len(config.RPN_ANCHOR_RATIOS), 256)
@@ -1889,9 +1893,13 @@ class MaskRCNN():
             # Network Heads
             # TODO: verify that this handles zero padded ROIs
 
-            fpn_classifier_graph = build_fpn_classifier_model(config, mrcnn_feature_maps)
             mrcnn_class_logits, mrcnn_class, mrcnn_bbox = \
                 fpn_classifier_graph([rois] + mrcnn_feature_maps)
+            # TODO find a better way to do this
+            # Fix output names
+            mrcnn_class_logits = KL.Lambda(lambda x: x, name='mrcnn_class_logits')(mrcnn_class_logits)
+            mrcnn_class = KL.Lambda(lambda x: x, name='mrcnn_class')(mrcnn_class)
+            mrcnn_bbox = KL.Lambda(lambda x: x, name='mrcnn_bbox')(mrcnn_bbox)
 
             mrcnn_mask = build_fpn_mask_graph(rois, mrcnn_feature_maps,
                                               config.IMAGE_SHAPE,
@@ -1954,7 +1962,6 @@ class MaskRCNN():
         else:
             # Network Heads
             # Proposal classifier and BBox regressor heads
-            fpn_classifier_graph = build_fpn_classifier_model(config, mrcnn_feature_maps)
             mrcnn_class_logits, mrcnn_class, mrcnn_bbox =\
                 fpn_classifier_graph([rpn_rois] + mrcnn_feature_maps)
 
@@ -1983,7 +1990,7 @@ class MaskRCNN():
 
         # Add multi-GPU support.
         if config.GPU_COUNT > 1:
-            from parallel_model import ParallelModel
+            from mask_rcnn.model.parallel_model import ParallelModel
             model = ParallelModel(model, config.GPU_COUNT)
 
         return model

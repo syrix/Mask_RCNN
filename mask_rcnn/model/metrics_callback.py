@@ -8,11 +8,12 @@ from recordclass import recordclass
 
 
 class MetricsCallback(keras.callbacks.Callback):
-    def __init__(self, config, generate_validation_generator, num_images):
+    def __init__(self, config, generate_validation_generator, num_images, verbose=False):
         super(keras.callbacks.Callback, self).__init__()
 
         self.num_classes = config.NUM_CLASSES
         self.generate_validation_generator = generate_validation_generator
+        self.verbose = verbose
 
         batch_size = config.BATCH_SIZE
         num_images = min(num_images, config.MAX_METRICS_IMAGES)
@@ -34,8 +35,14 @@ class MetricsCallback(keras.callbacks.Callback):
             gt_boxes = inputs[5]
             gt_masks = inputs[6]
 
-            y_pred = self.model.predict(inputs, verbose=0)
+            start_time = time.time()
+
+            y_pred = self.model.predict_on_batch(inputs)
             detections = y_pred[14]
+
+            time_passed = time.time() - start_time
+            if self.verbose:
+                print(f'inference on {len(inputs[0])} images took {time_passed} seconds.')
 
             for i in range(len(detections)):
                 new_metrics = self._calculate_metrics(
@@ -190,8 +197,7 @@ class Metrics:
             self.false_negative_pixels[class_id] += metrics_object.false_negative_pixels[class_id]
 
     def summarize(self):
-        time_passed = time.time() - self.start_time
-        print(f'done calculating metrics [time: {time_passed}]')
+        self.print_time_passed()
         for class_id in range(self.num_classes):
             print(f'mean iou for class {class_id}: '
                   f'{mean_or_zero(self.ious[class_id])}')
@@ -201,10 +207,15 @@ class Metrics:
                   f'{mean_or_zero(self.false_negative_pixels[class_id])}')
 
     def add_to_log(self, logs):
+        self.print_time_passed()
         for class_id in range(self.num_classes):
             logs[f'mean_iou_{class_id}'] = np.array(mean_or_zero(self.ious[class_id]))
             logs[f'mean_fpp_{class_id}'] = np.array(mean_or_zero(self.false_positive_pixels[class_id]))
             logs[f'mean_fnp_{class_id}'] = np.array(mean_or_zero(self.false_negative_pixels[class_id]))
+
+    def print_time_passed(self):
+        time_passed = time.time() - self.start_time
+        print(f'done calculating metrics [time: {time_passed}]')
 
 
 def mean_or_zero(values):
