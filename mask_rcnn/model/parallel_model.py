@@ -96,9 +96,14 @@ class ParallelModel(KM.Model):
                         return KL.Lambda(lambda t: K.reshape(t, [1, 1]))(tensor)
                     return tensor
                 outputs = list(map(add_dim, outputs))
-
                 # Concatenate
-                merged.append(KL.Concatenate(axis=0, name=name)(outputs))
+                if name.endswith('_loss'):
+                    concatenated = KL.Concatenate(axis=0, name=name+'_concat')(outputs)
+                    mean = KL.Lambda(lambda x: K.mean(x), name=name)(concatenated)
+                    merged.append(mean)
+                else:
+                    concatenated = KL.Concatenate(axis=0, name=name)(outputs)
+                    merged.append(concatenated)
         return merged
 
 

@@ -1,3 +1,4 @@
+import concurrent.futures
 from operator import attrgetter
 import time
 import math
@@ -6,96 +7,130 @@ import keras
 import numpy as np
 from recordclass import recordclass
 
+from mask_rcnn.model.data_generator import parallel_generator
+
 
 class MetricsCallback(keras.callbacks.Callback):
-    def __init__(self, config, generate_validation_generator, num_images, verbose=False):
+    def __init__(self, config, validation_sequence, num_images, verbose=False):
         super(keras.callbacks.Callback, self).__init__()
 
         self.num_classes = config.NUM_CLASSES
-        self.generate_validation_generator = generate_validation_generator
+        self.validation_sequence = validation_sequence
         self.verbose = verbose
+        self.num_workers = config.NUM_WORKERS
 
         batch_size = config.BATCH_SIZE
         num_images = min(num_images, config.MAX_METRICS_IMAGES)
         self.num_steps = math.ceil(num_images / batch_size)
         print(f'Creating metrics callback for {self.num_steps * batch_size} validation images.')
 
+    def _create_generator(self):
+        return parallel_generator(self.validation_sequence, self.num_steps, self.num_workers)
+
+    def _calculate_metrics_on_batch_async(self, executor, batch):
+        inputs, outputs = batch
+
+        images = inputs[0]
+        image_meta = inputs[1]
+        rpn_match = inputs[2]
+        rpn_bbox = inputs[3]
+        gt_class_ids = inputs[4]
+        gt_boxes = inputs[5]
+        gt_masks = inputs[6]
+
+        start_time = time.time()
+
+        y_pred = self.model.predict_on_batch(inputs)
+        detections = y_pred[14]
+
+        time_passed = time.time() - start_time
+        if self.verbose:
+            print(f'inference on {len(inputs[0])} images took {time_passed} seconds.')
+
+        futures = []
+        for i in range(len(detections)):
+            image_id = image_meta[i][0]
+            new_future = executor.submit(_calculate_metrics,
+                                         pred_boxes=detections[i], gt_boxes=gt_boxes[i],
+                                         gt_class_ids=gt_class_ids[i], num_classes=self.num_classes)
+            futures.append(new_future)
+
+        return futures
+
     def on_epoch_end(self, epoch, logs={}):
         metrics = Metrics(self.num_classes)
-        generator = self.generate_validation_generator()
+        generator = self._create_generator()
+        max_num_futures = self.num_workers * 2
 
-        for _ in range(self.num_steps):
-            inputs, outputs = generator.__next__()
+        # TODO handle duplicated images
 
-            images = inputs[0]
-            image_meta = inputs[1]
-            rpn_match = inputs[2]
-            rpn_bbox = inputs[3]
-            gt_class_ids = inputs[4]
-            gt_boxes = inputs[5]
-            gt_masks = inputs[6]
+        # We can use a with statement to ensure threads are cleaned up promptly
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+            all_futures = []
+            for batch in generator:
+                # Merge metrics if there are too many futures
+                while len(all_futures) > max_num_futures:
+                    finished_future = next(concurrent.futures.as_completed(all_futures))
+                    all_futures.remove(finished_future)
+                    new_metrics = finished_future.result()
+                    metrics.merge(new_metrics)
 
-            start_time = time.time()
+                # Calculate metrics on batch
+                all_futures += self._calculate_metrics_on_batch_async(executor, batch)
 
-            y_pred = self.model.predict_on_batch(inputs)
-            detections = y_pred[14]
-
-            time_passed = time.time() - start_time
-            if self.verbose:
-                print(f'inference on {len(inputs[0])} images took {time_passed} seconds.')
-
-            for i in range(len(detections)):
-                new_metrics = self._calculate_metrics(
-                    pred_boxes=detections[i], gt_boxes=gt_boxes[i], gt_class_ids=gt_class_ids[i])
+            for future in concurrent.futures.as_completed(all_futures):
+                new_metrics = future.result()
                 metrics.merge(new_metrics)
+
         metrics.add_to_log(logs)
 
-    def _calculate_metrics(self, pred_boxes, gt_boxes, gt_class_ids):
-        """
-        Calculate box-wise IoU for all classes in a single image
-        :param pred_boxes: list of predicted boxes.
-        Each box is a list of [min_y, min_x, max_y, max_x, class_id, score] as floats
-        :param gt_boxes: list of grount truth boxes.
-        Each box is a list of [min_y, min_x, max_y, max_x] as integers
-        :param gt_class_ids: a list of ground truth class ids.
-        :return: a dict with metrics per class
-        """
-        pred_box_class_id_index = 4
 
-        # trim empty boxes
-        pred_boxes = _trim_empty(pred_boxes)
-        gt_boxes = _trim_empty(gt_boxes)
-        gt_class_ids = gt_class_ids[0:len(gt_boxes)]
+def _calculate_metrics(pred_boxes, gt_boxes, gt_class_ids, num_classes):
+    """
+    Calculate box-wise IoU for all classes in a single image
+    :param pred_boxes: list of predicted boxes.
+    Each box is a list of [min_y, min_x, max_y, max_x, class_id, score] as floats
+    :param gt_boxes: list of grount truth boxes.
+    Each box is a list of [min_y, min_x, max_y, max_x] as integers
+    :param gt_class_ids: a list of ground truth class ids.
+    :return: a dict with metrics per class
+    """
+    pred_box_class_id_index = 4
 
-        # group ground truth boxes by class id
-        gt_boxes_by_class = []
-        for class_id in range(self.num_classes):
-            current_boxes = []
-            for i, box in enumerate(gt_boxes):
-                if gt_class_ids[i] == class_id:
-                    box = _convert_box(box)
-                    current_boxes.append(box)
-            gt_boxes_by_class.append(current_boxes)
+    # trim empty boxes
+    pred_boxes = _trim_empty(pred_boxes)
+    gt_boxes = _trim_empty(gt_boxes)
+    gt_class_ids = gt_class_ids[0:len(gt_boxes)]
 
-        # group predicted boxes by class id
-        pred_boxes_by_class = []
-        for class_id in range(self.num_classes):
-            current_boxes = []
-            for box in pred_boxes:
-                if box[pred_box_class_id_index] == class_id:
-                    box = _convert_box(box)
-                    current_boxes.append(box)
-            pred_boxes_by_class.append(current_boxes)
+    # group ground truth boxes by class id
+    gt_boxes_by_class = []
+    for class_id in range(num_classes):
+        current_boxes = []
+        for i, box in enumerate(gt_boxes):
+            if gt_class_ids[i] == class_id:
+                box = _convert_box(box)
+                current_boxes.append(box)
+        gt_boxes_by_class.append(current_boxes)
 
-        # match predicted to ground truth boxes
-        metrics = Metrics(self.num_classes)
-        for class_id in range(self.num_classes):
-            overlaps = _find_overlaps(gt_boxes_by_class[class_id], pred_boxes_by_class[class_id])
-            ious, false_positive_pixels, false_negative_pixels = \
-                _match_boxes(gt_boxes_by_class[class_id], pred_boxes_by_class[class_id], overlaps)
+    # group predicted boxes by class id
+    pred_boxes_by_class = []
+    for class_id in range(num_classes):
+        current_boxes = []
+        for box in pred_boxes:
+            if box[pred_box_class_id_index] == class_id:
+                box = _convert_box(box)
+                current_boxes.append(box)
+        pred_boxes_by_class.append(current_boxes)
 
-            metrics.add(class_id, ious, false_positive_pixels, false_negative_pixels)
-        return metrics
+    # match predicted to ground truth boxes
+    metrics = Metrics(num_classes)
+    for class_id in range(num_classes):
+        overlaps = _find_overlaps(gt_boxes_by_class[class_id], pred_boxes_by_class[class_id])
+        ious, false_positive_pixels, false_negative_pixels = \
+            _match_boxes(gt_boxes_by_class[class_id], pred_boxes_by_class[class_id], overlaps)
+
+        metrics.add(class_id, ious, false_positive_pixels, false_negative_pixels)
+    return metrics
 
 
 # TODO num unmatched pred_boxes, num matched boxes, num unmatched gt_boxes?
