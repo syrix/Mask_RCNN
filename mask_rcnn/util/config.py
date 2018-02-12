@@ -147,6 +147,7 @@ class Config(object):
     LEARNING_ADAM_BETA_1 = 0.9
     LEARNING_ADAM_BETA_2 = 0.999
     LEARNING_ADAM_EPSILON = 1e-1
+    LEARNING_ADAM_USE_AMSGRAD = False
 
     # Weight decay regularization
     WEIGHT_DECAY = 0.0001

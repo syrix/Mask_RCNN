@@ -105,7 +105,6 @@ def display_instances(image, boxes, masks, class_ids, class_names,
     # Show area outside image boundaries.
     height, width = image.shape[:2]
     needed_dpi = width / figsize[1]
-    print(f'setting shape to: {height}x{width}')
     ax.set_ylim(height, 0)
     ax.set_xlim(0, width)
     ax.axis('off')

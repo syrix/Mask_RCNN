@@ -28,10 +28,11 @@ import keras.initializers as KI
 import keras.engine as KE
 import keras.models as KM
 
-from mask_rcnn.util import utils
-from mask_rcnn.model.metrics_callback import MetricsCallback
 from mask_rcnn.model.data_generator import compose_image_meta, parse_image_meta, parse_image_meta_graph,\
     mold_image, TrainingSequence
+from mask_rcnn.model.metrics_callback import MetricsCallback
+from mask_rcnn.model.parallel_model import ParallelModel
+from mask_rcnn.util import utils
 
 # Requires TensorFlow 1.3+ and Keras 2.0.8+.
 from distutils.version import LooseVersion
@@ -1070,7 +1071,7 @@ def mrcnn_class_loss_graph(target_class_ids, pred_class_logits,
     # classes of the image.
     loss = loss * pred_active
 
-    # Computer loss mean. Use only predictions that contribute
+    # Compute loss mean. Use only predictions that contribute
     # to the loss to get a correct mean.
     loss = tf.reduce_sum(loss) / tf.reduce_sum(pred_active)
     return loss
@@ -1172,6 +1173,26 @@ class MaskRCNN():
         self.keras_model = self.build(mode=mode, config=config)
 
     def build(self, mode, config):
+        """Build Mask R-CNN architecture.
+            input_shape: The shape of the input image.
+            mode: Either "training" or "inference". The inputs and
+                outputs of the model differ accordingly.
+        """
+        # Add multi-GPU support.
+        if config.GPU_COUNT > 1:
+            # Build the weight storage on CPU
+            with tf.device('/cpu:0'):
+                model = self.build_sequential_model(mode=mode, config=config)
+
+            # And the rest on GPU
+            model = ParallelModel(model, config.GPU_COUNT)
+        else:
+            # Build the model on GPU
+            model = self.build_sequential_model(mode=mode, config=config)
+
+        return model
+
+    def build_sequential_model(self, mode, config):
         """Build Mask R-CNN architecture.
             input_shape: The shape of the input image.
             mode: Either "training" or "inference". The inputs and
@@ -1412,11 +1433,6 @@ class MaskRCNN():
                                  mrcnn_mask, rpn_rois, rpn_class, rpn_bbox],
                              name='mask_rcnn')
 
-        # Add multi-GPU support.
-        if config.GPU_COUNT > 1:
-            from mask_rcnn.model.parallel_model import ParallelModel
-            model = ParallelModel(model, config.GPU_COUNT)
-
         return model
 
     def find_last(self):
@@ -1515,6 +1531,7 @@ class MaskRCNN():
             optimizer = keras.optimizers.Adam(lr=learning_rate, beta_1=self.config.LEARNING_ADAM_BETA_1,
                                               beta_2=self.config.LEARNING_ADAM_BETA_2,
                                               epsilon=self.config.LEARNING_ADAM_EPSILON,
+                                              amsgrad=self.config.LEARNING_ADAM_USE_AMSGRAD,
                                               decay=0., clipnorm=5.0)
 
         # Add Losses
@@ -1535,7 +1552,7 @@ class MaskRCNN():
         reg_losses = [keras.regularizers.l2(self.config.WEIGHT_DECAY)(w) / tf.cast(tf.size(w), tf.float32)
                       for w in self.keras_model.trainable_weights
                       if 'gamma' not in w.name and 'beta' not in w.name]
-        self.keras_model.add_loss(tf.add_n(reg_losses))
+        self.keras_model.add_loss(tf.add_n(reg_losses, name="reg_loss"))
 
         # Compile
         self.keras_model.compile(optimizer=optimizer,
@@ -1659,7 +1676,7 @@ class MaskRCNN():
                                           config=self.config, shuffle=True)
         val_sequence = TrainingSequence(dataset=val_dataset, batch_size=self.config.BATCH_SIZE,
                                         config=self.config, shuffle=True, augment=False)
-        metrics_val_sequence = TrainingSequence(dataset=train_dataset, batch_size=self.config.BATCH_SIZE,
+        metrics_val_sequence = TrainingSequence(dataset=val_dataset, batch_size=self.config.BATCH_SIZE,
                                                 config=self.config, shuffle=False, augment=False)
 
         # Callbacks
@@ -1693,7 +1710,7 @@ class MaskRCNN():
             callbacks=callbacks,
             validation_data=val_sequence,
             validation_steps=self.config.VALIDATION_STEPS,
-            max_queue_size=workers * 2,
+            max_queue_size=workers + self.config.GPU_COUNT,
             workers=workers,
             use_multiprocessing=True,
         )

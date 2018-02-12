@@ -18,10 +18,12 @@ class MetricsCallback(keras.callbacks.Callback):
         self.validation_sequence = validation_sequence
         self.verbose = verbose
         self.num_workers = config.NUM_WORKERS
+        self.gpu_count = config.GPU_COUNT
 
         batch_size = config.BATCH_SIZE
         num_images = min(num_images, config.MAX_METRICS_IMAGES)
         self.num_steps = math.ceil(num_images / batch_size)
+        self.used_image_ids = set()
         print(f'Creating metrics callback for {self.num_steps * batch_size} validation images.')
 
     def _create_generator(self):
@@ -50,19 +52,23 @@ class MetricsCallback(keras.callbacks.Callback):
         futures = []
         for i in range(len(detections)):
             image_id = image_meta[i][0]
-            new_future = executor.submit(_calculate_metrics,
+            if image_id not in self.used_image_ids:
+                self.used_image_ids.add(image_id)
+                new_future = executor.submit(_calculate_metrics,
                                          pred_boxes=detections[i], gt_boxes=gt_boxes[i],
                                          gt_class_ids=gt_class_ids[i], num_classes=self.num_classes)
-            futures.append(new_future)
-
+                futures.append(new_future)
+            else:
+                print(f'skipping image {image_id}, since it was already used for validation')
         return futures
 
     def on_epoch_end(self, epoch, logs={}):
         metrics = Metrics(self.num_classes)
         generator = self._create_generator()
-        max_num_futures = self.num_workers * 2
+        max_num_futures = self.num_workers + self.gpu_count
 
         # TODO handle duplicated images
+        self.used_image_ids = set()
 
         # We can use a with statement to ensure threads are cleaned up promptly
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:

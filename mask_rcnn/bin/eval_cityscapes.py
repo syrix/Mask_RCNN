@@ -1,22 +1,20 @@
+import datetime
 import os
-import sys
 import random
-import math
-import re
-import time
+random.seed(42)
 import numpy as np
-import cv2
-import matplotlib
-import matplotlib.pyplot as plt
+np.random.seed(42)
+
 
 from mask_rcnn.util.config import Config
 from mask_rcnn.util import utils
 from mask_rcnn.model import model as modellib
-from mask_rcnn.util import visualize
-from mask_rcnn.model.model import log
+from mask_rcnn.util.dataset import CachedDataset
+from mask_rcnn.model.data_generator import load_image_gt
 
 # Root directory of the project
-ROOT_DIR = os.getcwd()
+ROOT_DIR = '/output/cityscapes/root_dir'
+os.makedirs(ROOT_DIR, exist_ok=True)
 
 # Directory to save logs and trained model
 MODEL_DIR = os.path.join(ROOT_DIR, "logs")
@@ -38,24 +36,41 @@ class CityscapesConfig(Config):
 
     # Train on 1 GPU and 8 images per GPU. We can put multiple images on each
     # GPU because the images are small. Batch size is 8 (GPUs * images/GPU).
-    GPU_COUNT = 1
-    IMAGES_PER_GPU = 2
+    GPU_COUNT = 2
+    IMAGES_PER_GPU = 1
 
     # Number of classes (including background)
     NUM_CLASSES = 8 + 1  # background + actual classes
 
     # Use small images for faster training. Set the limits of the small side
     # the large side, and that determines the image shape.
+    # TODO
     IMAGE_MIN_DIM = 1024
     IMAGE_MAX_DIM = 1024
+    # TODO
+    # IMAGE_MIN_DIM = 969
+    # IMAGE_MAX_DIM = 1280
 
     MEAN_PIXEL = np.array((72.78044, 83.21195, 73.45286))
 
-    # Use a small epoch since the data is simple
-    STEPS_PER_EPOCH = 100  # TODO
+    # Use full epoche for each dataset
+    STEPS_PER_EPOCH = None
 
     # use small validation steps since the epoch is small
-    VALIDATION_STEPS = 2  # TODO
+    VALIDATION_STEPS = 200
+
+    LEARNING_RATE = 0.002
+
+    LEARNING_RMS_PROP_EPSILON = 1e-8
+    LEARNING_ADAM_EPSILON = 1e-8
+    LEARNING_ADAM_USE_AMSGRAD = True
+
+    MAX_METRICS_IMAGES = 500
+
+    NUM_WORKERS = 14
+
+
+optimizer = 'sgd'
 
 
 config = CityscapesConfig()
@@ -359,23 +374,27 @@ elif init_with == "last":
 # Passing layers="heads" freezes all layers except the head
 # layers. You can also pass a regular expression to select
 # which layers to train by name pattern.
-num_epochs = 1  # TODO
+num_epochs = 5  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE,
             epochs=num_epochs,
-            layers='heads')
-
-
+            layers='heads', optimizer_type='optimizer')
 
 # Fine tune all layers
 # Passing layers="all" trains all layers. You can also
 # pass a regular expression to select which layers to
 # train by name pattern.
-num_epochs = 2  # TODO
+num_epochs = 5  # TODO
+model.train(dataset_train, dataset_val,
+            learning_rate=config.LEARNING_RATE,
+            epochs=num_epochs,
+            layers="all", optimizer_type='optimizer')
+
+num_epochs = 5  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE / 10,
             epochs=num_epochs,
-            layers="all")
+            layers="all", optimizer_type='optimizer')
 
 
 
@@ -424,9 +443,10 @@ for image_id in image_ids:
     results = model.detect([image], verbose=0)
     r = results[0]
     # Compute AP
-    AP, precisions, recalls, overlaps = \
-        utils.compute_ap(gt_bbox, gt_class_id,
-                         r["rois"], r["class_ids"], r["scores"])
-    APs.append(AP)
+    if len(gt_class_id) != 0:
+        AP, precisions, recalls, overlaps = \
+            utils.compute_ap(gt_bbox, gt_class_id,
+                             r["rois"], r["class_ids"], r["scores"])
+        APs.append(AP)
 
 print("mAP: ", np.mean(APs))
