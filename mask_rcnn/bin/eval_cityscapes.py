@@ -378,7 +378,7 @@ num_epochs = 5  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE,
             epochs=num_epochs,
-            layers='heads', optimizer_type='optimizer')
+            layers='heads', optimizer_type=optimizer)
 
 # Fine tune all layers
 # Passing layers="all" trains all layers. You can also
@@ -388,13 +388,13 @@ num_epochs = 5  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE,
             epochs=num_epochs,
-            layers="all", optimizer_type='optimizer')
+            layers="all", optimizer_type=optimizer)
 
 num_epochs = 5  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE / 10,
             epochs=num_epochs,
-            layers="all", optimizer_type='optimizer')
+            layers="all", optimizer_type=optimizer)
 
 
 
