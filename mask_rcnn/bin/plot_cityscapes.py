@@ -1,20 +1,25 @@
-import datetime
 import os
+import sys
 import random
-random.seed(42)
+import math
+import re
+import time
 import numpy as np
-np.random.seed(42)
+import cv2
+import matplotlib
+matplotlib.use('Agg')
 
+import matplotlib.pyplot as plt
 
 from mask_rcnn.util.config import Config
 from mask_rcnn.util import utils
 from mask_rcnn.model import model as modellib
 from mask_rcnn.util.cityscapes_dataset import CityscapesDataset
+from mask_rcnn.util import visualize
 from mask_rcnn.model.data_generator import load_image_gt
 
 # Root directory of the project
 ROOT_DIR = '/output/cityscapes/root_dir'
-os.makedirs(ROOT_DIR, exist_ok=True)
 
 # Directory to save logs and trained model
 MODEL_DIR = os.path.join(ROOT_DIR, "logs")
@@ -69,10 +74,6 @@ class CityscapesConfig(Config):
 
     NUM_WORKERS = 14
 
-
-optimizer = 'sgd'
-
-
 config = CityscapesConfig()
 config.display()
 
@@ -90,64 +91,6 @@ dataset_val = CityscapesDataset(cache_path=cityscapes_cache_path, version=citysc
                                 cache_images=False, grayscale=True)
 dataset_val.load_images('val')
 dataset_val.prepare()
-
-
-# Create model in training mode
-model = modellib.MaskRCNN(mode="training", config=config,
-                          model_dir=MODEL_DIR)
-
-
-# Which weights to start with?
-init_with = "coco"  # imagenet, coco, or last
-
-if init_with == "imagenet":
-    model.load_weights(model.get_imagenet_weights(), by_name=True)
-elif init_with == "coco":
-    # Load weights trained on MS COCO, but skip layers that
-    # are different due to the different number of classes
-    # See README for instructions to download the COCO weights
-    model.load_weights(COCO_MODEL_PATH, by_name=True,
-                       exclude=["mrcnn_class_logits", "mrcnn_bbox_fc",
-                                "mrcnn_bbox", "mrcnn_mask"])
-elif init_with == "last":
-    # Load the last model you trained and continue training
-    model.load_weights(model.find_last()[1], by_name=True)
-
-
-
-# Train the head branches
-# Passing layers="heads" freezes all layers except the head
-# layers. You can also pass a regular expression to select
-# which layers to train by name pattern.
-num_epochs = 5  # TODO
-model.train(dataset_train, dataset_val,
-            learning_rate=config.LEARNING_RATE,
-            epochs=num_epochs,
-            layers='heads', optimizer_type=optimizer)
-
-# Fine tune all layers
-# Passing layers="all" trains all layers. You can also
-# pass a regular expression to select which layers to
-# train by name pattern.
-num_epochs = 10  # TODO
-model.train(dataset_train, dataset_val,
-            learning_rate=config.LEARNING_RATE,
-            epochs=num_epochs,
-            layers="all", optimizer_type=optimizer)
-
-num_epochs = 15  # TODO
-model.train(dataset_train, dataset_val,
-            learning_rate=config.LEARNING_RATE / 10,
-            epochs=num_epochs,
-            layers="all", optimizer_type=optimizer)
-
-
-
-# Save weights
-# Typically not needed because callbacks save after every epoch
-# Uncomment to save manually
-model_path = os.path.join(MODEL_DIR, "mask_rcnn_cityscapes_eval.h5")
-model.keras_model.save_weights(model_path)
 
 
 
@@ -169,20 +112,79 @@ model_path = model.find_last()[1]
 
 # Load trained weights (fill in path to trained weights here)
 assert model_path != "", "Provide path to trained weights"
-print("Loading weights from ", model_path)
+print(f'Loading weights from {model_path}')
 model.load_weights(model_path, by_name=True)
 
 
+from tqdm import tqdm
+
+print(f'INFO: Plot {len(dataset_val.image_ids)} images')
+import sys
+sys.stdout.flush()
+
+plot_images = True
+
+os.makedirs('/output/cityscapes/plots/val/', exist_ok=True)
+os.makedirs('/output/cityscapes/plots/train/', exist_ok=True)
+
+# # Plot validation images
+image_ids = dataset_val.image_ids
+for image_id in tqdm(image_ids):
+    original_image, image_meta, gt_class_id, gt_bbox, gt_mask =\
+        load_image_gt(dataset_val, inference_config,
+                               image_id, use_mini_mask=False)
+
+    filename = os.path.basename(dataset_val.source_image_link(image_id))
+    filename_without_extension = os.path.splitext(filename)[0]
+
+    if plot_images:
+        save_path = f'/output/cityscapes/plots/val/{filename_without_extension}_gt.png'
+        visualize.display_instances(original_image, gt_bbox, gt_mask, gt_class_id,
+                                    dataset_val.class_names, save_path=save_path)
+
+    results = model.detect([original_image])
+
+    r = results[0]
+    if plot_images:
+        save_path = f'/output/cityscapes/plots/val/{filename_without_extension}_pred.png'
+        visualize.display_instances(original_image, r['rois'], r['masks'], r['class_ids'],
+                                    dataset_val.class_names, r['scores'], save_path=save_path)
+
+image_ids = dataset_train.image_ids
+for image_id in tqdm(image_ids):
+    original_image, image_meta, gt_class_id, gt_bbox, gt_mask =\
+        load_image_gt(dataset_train, inference_config,
+                               image_id, use_mini_mask=False)
+
+    filename = os.path.basename(dataset_train.source_image_link(image_id))
+    filename_without_extension = os.path.splitext(filename)[0]
+
+    if plot_images:
+        save_path = f'/output/cityscapes/plots/train/{filename_without_extension}_gt.png'
+        visualize.display_instances(original_image, gt_bbox, gt_mask, gt_class_id,
+                                    dataset_train.class_names, save_path=save_path)
+
+    results = model.detect([original_image])
+
+    r = results[0]
+    if plot_images:
+        save_path = f'/output/cityscapes/plots/train/{filename_without_extension}_pred.png'
+        visualize.display_instances(original_image, r['rois'], r['masks'], r['class_ids'],
+                                    dataset_train.class_names, r['scores'], save_path=save_path)
+
+
+
+print('INFO: Compute mAP')
 
 # Compute VOC-Style mAP @ IoU=0.5
 # Running on 10 images. Increase for better accuracy.
-image_ids = np.random.choice(dataset_val.image_ids, 10)
+image_ids = dataset_val.image_ids
 APs = []
-for image_id in image_ids:
+for image_id in tqdm(image_ids):
     # Load image and ground truth data
     image, image_meta, gt_class_id, gt_bbox, gt_mask = \
         load_image_gt(dataset_val, inference_config,
-                      image_id, use_mini_mask=False)
+                               image_id, use_mini_mask=False)
     molded_images = np.expand_dims(modellib.mold_image(image, inference_config), 0)
     # Run object detection
     results = model.detect([image], verbose=0)
