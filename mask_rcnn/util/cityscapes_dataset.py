@@ -105,8 +105,10 @@ id2train_id = {label.id: label.train_id for label in labels}
 class CityscapesDataset(CachedDataset):
     """Generates the cityscapes dataset.
     """
-    def __init__(self, class_map=None, cache_path='', version='', cache_images=True, cache_masks=True, grayscale=False):
+    def __init__(self, class_map=None, cache_path='', version='', cache_images=True, cache_masks=True,
+                 grayscale=False, split_instance_groups=False):
         self.grayscale = grayscale
+        self.split_instance_groups = split_instance_groups
 
         super().__init__(class_map=class_map, cache_path=cache_path, version=version, cache_images=cache_images,
                          cache_masks=cache_masks)
@@ -252,16 +254,22 @@ class CityscapesDataset(CachedDataset):
 
             # calculate class id from instance id
             class_id = instance_id
+
+            current_mask_list = [current_mask]
             if class_id > 1000:
                 class_id //= 1000
+            else:
+                if self.split_instance_groups:
+                    current_mask_list = _split_mask_into_instances(current_mask)
 
             # convert id to train id to internal id
             class_id = self.id2internal_id[class_id]
 
             # assert class_id in self.class_ids, f'class_id {class_id} not in class_ids: {class_ids} [path: {info["path"]}, divided: {divided}]'
             if class_id in self.class_ids:
-                masks.append(current_mask)
-                class_ids.append(class_id)
+                for split_mask in current_mask_list:
+                    masks.append(split_mask)
+                    class_ids.append(class_id)
         if masks:
             masks = np.concatenate(masks, axis=2)
         else:
@@ -269,3 +277,24 @@ class CityscapesDataset(CachedDataset):
 
         assert masks.shape == (image_height, image_width, len(class_ids))
         return masks, np.array(class_ids)
+
+
+def _split_mask_into_instances(mask):
+    from skimage import measure
+    split_mask = measure.label(mask, background=0)
+    instances = np.unique(split_mask)
+
+    # Early return for single instance (background + optional foreground instance)
+    if len(instances) <= 2:
+        return [mask]
+
+    result = []
+    for instance_id in instances:
+        if instance_id == 0:
+            continue
+        current_mask = np.copy(split_mask)
+        current_mask[current_mask != instance_id] = 0
+        current_mask[current_mask == instance_id] = 1
+
+        result.append(current_mask)
+    return result
