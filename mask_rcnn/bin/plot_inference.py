@@ -3,10 +3,11 @@ import sys
 
 import numpy as np
 import matplotlib
+
 matplotlib.use('Agg')
 
 from mask_rcnn.util.config import Config
-from mask_rcnn.util.cityscapes_dataset import CityscapesDataset
+from mask_rcnn.util.inference_dataset import InferenceDataset
 from mask_rcnn.util.plot_datasets import plot_datasets
 
 
@@ -15,6 +16,7 @@ def main(dataset_name):
     sys.stdout.flush()
 
     output_dir = f'/output/{dataset_name}'
+    image_folder = f'/data/{dataset_name}'
 
     class CityscapesConfig(Config):
         """Configuration for training on the cityscapes dataset.
@@ -61,19 +63,14 @@ def main(dataset_name):
 
     config = CityscapesConfig()
 
-    cityscapes_cache_path = f'/output/{dataset_name}/mask_cache'
-    cityscapes_cache_version = 2
+    inference_cache_path = f'/output/{dataset_name}/mask_cache'
+    inference_cache_version = 2
     # Training dataset
-    dataset_train = CityscapesDataset(cache_path=cityscapes_cache_path, version=cityscapes_cache_version,
-                                      cache_images=False, grayscale=True)
-    dataset_train.load_images('train')
-    dataset_train.prepare()
-
-    # Validation dataset
-    dataset_val = CityscapesDataset(cache_path=cityscapes_cache_path, version=cityscapes_cache_version,
-                                    cache_images=False, grayscale=True)
-    dataset_val.load_images('val')
-    dataset_val.prepare()
+    dataset = InferenceDataset(dataset_name=dataset_name, image_folder=image_folder,
+                               cache_path=inference_cache_path, version=inference_cache_version,
+                               cache_images=False, grayscale=True)
+    dataset.load_images()
+    dataset.prepare()
 
     class InferenceConfig(CityscapesConfig):
         GPU_COUNT = 1
@@ -82,7 +79,7 @@ def main(dataset_name):
     inference_config = InferenceConfig()
 
     plot_datasets(output_dir=output_dir, config=config, inference_config=inference_config,
-                  datasets=[dataset_train, dataset_val])
+                  datasets=[dataset])
 
 
 if __name__ == '__main__':

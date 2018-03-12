@@ -1,19 +1,12 @@
-from os import path
+import os
 from collections import namedtuple
 from collections import defaultdict
 
-import scipy
-import skimage.color
+from skimage import color
 import skimage.io
-import skimage.measure
 import numpy as np
 
 from mask_rcnn.util.dataset import CachedDataset
-
-
-DATA_FOLDER = '/data/Cityscapes/'
-IMAGE_FOLDER = path.join(DATA_FOLDER, 'images')
-INSTANCE_FOLDER = path.join(DATA_FOLDER, 'instances')
 
 
 # a label and all meta information
@@ -103,22 +96,20 @@ id2label = {label.id: label for label in labels}
 id2train_id = {label.id: label.train_id for label in labels}
 
 
-class CityscapesDataset(CachedDataset):
-    """Generates the cityscapes dataset.
-    """
-    def __init__(self, class_map=None, cache_path='', version='', cache_images=True, cache_masks=True,
-                 grayscale=False, split_instance_groups=False):
+class InferenceDataset(CachedDataset):
+    def __init__(self, dataset_name, image_folder, class_map=None,
+                 cache_path='', version='', cache_images=True, cache_masks=True,
+                 grayscale=False):
         self.grayscale = grayscale
-        self.split_instance_groups = split_instance_groups
+        self.dataset_name = dataset_name
+        self.image_folder = image_folder
 
         super().__init__(class_map=class_map, cache_path=cache_path, version=version, cache_images=cache_images,
                          cache_masks=cache_masks)
 
-    def load_images(self, type):
-        """Load cityscapes images.
-        type: Subset of the dataset that should be loaded. Can be 'train', 'val' or 'test'.
+    def load_images(self):
+        """Load images.
         """
-        assert type in ['train', 'val', 'test']
 
         # Add classes
         #         classes = {
@@ -179,18 +170,14 @@ class CityscapesDataset(CachedDataset):
         for label in allowed_labels:
             if label.train_id != 0:
                 self.id2internal_id[label.id] = counter
-                self.add_class("cityscapes", label.train_id, label.train_name)
+                self.add_class(self.dataset_name, label.train_id, label.train_name)
                 counter += 1
 
         # Add images
-        image_list = path.join(DATA_FOLDER, type + '.txt')
-        with open(image_list, "r") as f:
-            for count, line in enumerate(f):
-                image_id = f'{type}-{count}'
-                filename = line.strip()
-                image_path = path.join(IMAGE_FOLDER, filename)
-                mask_path = path.join(INSTANCE_FOLDER, filename)
-                self.add_image("cityscapes", image_id=image_id, path=image_path, mask_path=mask_path)
+        for count, filename in enumerate(os.listdir(self.image_folder)):
+            image_id = f'img-{count}'
+            image_path = os.path.join(self.image_folder, filename)
+            self.add_image(self.dataset_name, image_id=image_id, path=image_path)
 
     def load_image_without_caching(self, image_id):
         """Generate an image from the specs of the given image ID.
@@ -200,17 +187,18 @@ class CityscapesDataset(CachedDataset):
         """
         info = self.image_info[image_id]
         image = skimage.io.imread(info['path'])
+
         if self.grayscale:
-            # TODO check why this even works
-            image = skimage.color.rgb2gray(image)
+            image = color.rgb2gray(image)
             image = np.expand_dims(image, axis=2)
             image = np.repeat(image, repeats=3, axis=2)
+            image = image * 255  # convert from float to int representation
         return image
 
     def image_reference(self, image_id):
         """Return the shapes data of the image."""
         info = self.image_info[image_id]
-        if info["source"] == "cityscapes":
+        if info["source"] == self.dataset_name:
             return image_id
         else:
             super(self.__class__).image_reference(self, image_id)
@@ -218,84 +206,7 @@ class CityscapesDataset(CachedDataset):
     def load_mask_without_caching(self, image_id):
         """Generate instance masks for shapes of the given image ID.
         """
-        # TODO don't hardcode
-        image_width = 2048
-        image_height = 1024
+        mask = np.empty([0, 0, 0])
+        class_ids = np.empty([0], np.int32)
+        return mask, class_ids
 
-        # load instance image
-        info = self.image_info[image_id]
-        mask = skimage.io.imread(info['mask_path'])
-        assert mask.shape == (image_height, image_width)
-
-        # extract instances
-        instances = np.unique(mask)
-
-        # create masks
-        expanded_mask = np.expand_dims(mask, axis=2)
-        empty_mask = np.zeros(expanded_mask.shape)
-        masks = []  # np.repeat(empty_mask, len(instances), axis=2)
-        class_ids = []
-        for instance_id in instances:
-            # ignore background class
-            if instance_id == 0:
-                continue
-
-            # calculate mask
-            current_mask = np.copy(expanded_mask)
-            current_mask[current_mask != instance_id] = 0
-            current_mask[current_mask == instance_id] = 1
-
-            # ignore small boxes
-            # TODO speed
-            # TODO don't guess this
-            scale = 1 / 3  # TODO don't hardcode
-            scaled_mask = scipy.ndimage.zoom(current_mask, zoom=[scale, scale, 1], order=0)
-            unique = np.unique(scaled_mask)
-            if len(unique) == 1:  # only background
-                continue
-
-            # calculate class id from instance id
-            class_id = instance_id
-
-            current_mask_list = [current_mask]
-            if class_id > 1000:
-                class_id //= 1000
-            else:
-                if self.split_instance_groups:
-                    current_mask_list = _split_mask_into_instances(current_mask)
-
-            # convert id to train id to internal id
-            class_id = self.id2internal_id[class_id]
-
-            # assert class_id in self.class_ids, f'class_id {class_id} not in class_ids: {class_ids} [path: {info["path"]}, divided: {divided}]'
-            if class_id in self.class_ids:
-                for split_mask in current_mask_list:
-                    masks.append(split_mask)
-                    class_ids.append(class_id)
-        if masks:
-            masks = np.concatenate(masks, axis=2)
-        else:
-            masks = np.array([]).reshape((image_height, image_width, 0))
-
-        assert masks.shape == (image_height, image_width, len(class_ids))
-        return masks, np.array(class_ids)
-
-
-def _split_mask_into_instances(mask):
-    split_mask = skimage.measure.label(mask, background=0)
-    instances = np.unique(split_mask)
-
-    # Early return for single instance (background + optional foreground instance)
-    if len(instances) <= 2:
-        return [mask]
-
-    result = []
-    for instance_id in instances:
-        if instance_id == 0:
-            continue
-        current_mask = np.copy(split_mask)
-        current_mask[current_mask != instance_id] = 0
-        current_mask[current_mask == instance_id] = 1
-
-        result.append(current_mask)
-    return result
