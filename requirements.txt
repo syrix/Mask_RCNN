@@ -1,0 +1,7 @@
+numpy==1.14.*
+tensorflow_gpu==1.4.*
+Keras==2.1.*
+scikit-image==0.13.*
+recordclass==0.5
+tqdm==4.19.*
+h5py==2.7.*

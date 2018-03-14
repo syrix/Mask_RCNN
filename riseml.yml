@@ -1,0 +1,17 @@
+project: mask_rcnn
+train:
+  framework: tensorflow
+  tensorflow:
+    version: 1.4.0
+    tensorboard: true
+  install: 
+    - add-apt-repository ppa:deadsnakes/ppa && apt-get update && apt-get install -y curl git python3.6 wget
+    - apt-get install -y python3.6-dev libxml2-dev libxslt-dev
+    - wget https://bootstrap.pypa.io/get-pip.py && python3.6 get-pip.py
+    - pip3.6 install -r requirements.txt
+  resources:
+    cpus: 1
+    mem: 1000
+    gpus: 1
+  run:
+    - ls /data/mask-rcnn/Cityscapes

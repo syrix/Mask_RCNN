@@ -1,10 +1,8 @@
-import datetime
 import os
 import random
 random.seed(42)
 import numpy as np
 np.random.seed(42)
-
 
 from mask_rcnn.util.config import Config
 from mask_rcnn.util import utils
@@ -76,7 +74,7 @@ optimizer = 'sgd'
 config = CityscapesConfig()
 config.display()
 
-cityscapes_cache_path = '/output/cityscapes/mask_cache'
+cityscapes_cache_path = '/data/mask-rcnn/my_cityscapes/mask_cache'
 cityscapes_cache_version = 2
 
 # Training dataset
@@ -107,8 +105,7 @@ elif init_with == "coco":
     # are different due to the different number of classes
     # See README for instructions to download the COCO weights
     model.load_weights(COCO_MODEL_PATH, by_name=True,
-                       exclude=["mrcnn_class_logits", "mrcnn_bbox_fc",
-                                "mrcnn_bbox", "mrcnn_mask"])
+                       exclude=["mrcnn_class_logits", "mrcnn_bbox_fc", "mrcnn_bbox", "mrcnn_mask"])
 elif init_with == "last":
     # Load the last model you trained and continue training
     model.load_weights(model.find_last()[1], by_name=True)
@@ -150,12 +147,13 @@ model_path = os.path.join(MODEL_DIR, "mask_rcnn_cityscapes_eval.h5")
 model.keras_model.save_weights(model_path)
 
 
-
 class InferenceConfig(CityscapesConfig):
     GPU_COUNT = 1
     IMAGES_PER_GPU = 1
 
+
 inference_config = InferenceConfig()
+
 
 # Recreate the model in inference mode
 model = modellib.MaskRCNN(mode="inference",
@@ -171,7 +169,6 @@ model_path = model.find_last()[1]
 assert model_path != "", "Provide path to trained weights"
 print("Loading weights from ", model_path)
 model.load_weights(model_path, by_name=True)
-
 
 
 # Compute VOC-Style mAP @ IoU=0.5

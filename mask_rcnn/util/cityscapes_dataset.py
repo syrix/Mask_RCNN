@@ -11,7 +11,7 @@ import numpy as np
 from mask_rcnn.util.dataset import CachedDataset
 
 
-DATA_FOLDER = '/data/Cityscapes/'
+DATA_FOLDER = '/data/mask-rcnn/Cityscapes/'
 IMAGE_FOLDER = path.join(DATA_FOLDER, 'images')
 INSTANCE_FOLDER = path.join(DATA_FOLDER, 'instances')
 
