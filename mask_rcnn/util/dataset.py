@@ -1,3 +1,4 @@
+import concurrent.futures
 import gzip
 import os
 
@@ -12,12 +13,14 @@ class CachedDataset(Dataset):
     Dataset base class for datasets where images, masks or both should be cached on disk.
     This will lead to a performance gain if masks are expensive to compute and the hard disk is fast.
     """
-    def __init__(self, class_map=None, cache_path='', version='', cache_images=True, cache_masks=True):
+    def __init__(self, class_map=None, cache_path='', version='', cache_images=True, cache_masks=True,
+                 num_preload_workers=32):
         assert cache_path != '' and version != '', 'cache_path and version can not be empty'
         self.cache_path = os.path.join(cache_path, f'v_{version}')
         self.cache_images = cache_images
         self.cache_masks = cache_masks
         self.data_cached = False
+        self.num_preload_workers = num_preload_workers
 
         os.makedirs(self.cache_path, exist_ok=True)
 
@@ -51,27 +54,38 @@ class CachedDataset(Dataset):
             cached = False
         return cached
 
+    def preload_image_async(self, image_id):
+        if self.cache_images:
+            image = self.load_image(image_id)
+            with gzip.GzipFile(self.image_path(image_id), 'w', compresslevel=1) as f:
+                np.save(f, image)
+        if self.cache_masks:
+            masks, classes = self.load_mask(image_id)
+            with gzip.GzipFile(self.masks_path(image_id), 'w', compresslevel=1) as f:
+                np.save(f, masks)
+            with gzip.GzipFile(self.classes_path(image_id), 'w', compresslevel=1) as f:
+                np.save(f, classes)
+
     def prepare(self, class_map=None):
         super().prepare(class_map)
 
         print('Preparing dataset...')
 
         self.data_cached = False
-        for image_id in tqdm(self.image_ids):
-            # images already present
-            if self.is_cached(image_id):
-                continue
-
-            if self.cache_images:
-                image = self.load_image(image_id)
-                with gzip.GzipFile(self.image_path(image_id), 'w', compresslevel=1) as f:
-                    np.save(f, image)
-            if self.cache_masks:
-                masks, classes = self.load_mask(image_id)
-                with gzip.GzipFile(self.masks_path(image_id), 'w', compresslevel=1) as f:
-                    np.save(f, masks)
-                with gzip.GzipFile(self.classes_path(image_id), 'w', compresslevel=1) as f:
-                    np.save(f, classes)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_preload_workers) as executor:
+            all_futures = []
+            for image_id in tqdm(self.image_ids):
+                # images already present
+                if self.is_cached(image_id):
+                    continue
+                if len(all_futures) >= self.num_preload_workers:
+                    finished_future = next(concurrent.futures.as_completed(all_futures))
+                    all_futures.remove(finished_future)
+                new_future = executor.submit(self.preload_image_async, image_id)
+                all_futures.append(new_future)
+        # await all futures
+        for future in concurrent.futures.as_completed(all_futures):
+            future.result()
         self.data_cached = True
 
     def load_image(self, image_id):

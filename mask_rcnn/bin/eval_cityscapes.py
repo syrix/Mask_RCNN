@@ -38,7 +38,7 @@ class CityscapesConfig(Config):
     IMAGES_PER_GPU = 1
 
     # Number of classes (including background)
-    NUM_CLASSES = 8 + 1  # background + actual classes
+    NUM_CLASSES = 10 + 1  # background + actual classes
 
     # Use small images for faster training. Set the limits of the small side
     # the large side, and that determines the image shape.
@@ -75,17 +75,17 @@ config = CityscapesConfig()
 config.display()
 
 cityscapes_cache_path = '/data/mask-rcnn/my_cityscapes/mask_cache'
-cityscapes_cache_version = 2
+cityscapes_cache_version = 4
 
 # Training dataset
 dataset_train = CityscapesDataset(cache_path=cityscapes_cache_path, version=cityscapes_cache_version,
-                                  cache_images=False, grayscale=True)
+                                  cache_images=False, grayscale=True, split_instance_groups=True)
 dataset_train.load_images('train')
 dataset_train.prepare()
 
 # Validation dataset
 dataset_val = CityscapesDataset(cache_path=cityscapes_cache_path, version=cityscapes_cache_version,
-                                cache_images=False, grayscale=True)
+                                cache_images=False, grayscale=True, split_instance_groups=True)
 dataset_val.load_images('val')
 dataset_val.prepare()
 

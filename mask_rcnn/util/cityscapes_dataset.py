@@ -169,10 +169,15 @@ class CityscapesDataset(CachedDataset):
             'bus',
             'train',
             'motorcycle',
-            'bicycle'
+            'bicycle',
+            'traffic light',
+            'traffic sign'
         ]
+        self.labels_to_split = ['traffic light', 'traffic sign']
         allowed_labels = [label for label in labels if label.name in allowed_label_names]
 
+        def whatever():
+            return -1
         self.id2internal_id = defaultdict(lambda: -1)
 
         counter = 1
@@ -261,7 +266,7 @@ class CityscapesDataset(CachedDataset):
             if class_id > 1000:
                 class_id //= 1000
             else:
-                if self.split_instance_groups:
+                if self.split_instance_groups and id2label[class_id].name in self.labels_to_split:
                     current_mask_list = _split_mask_into_instances(current_mask)
 
             # convert id to train id to internal id
@@ -270,6 +275,7 @@ class CityscapesDataset(CachedDataset):
             # assert class_id in self.class_ids, f'class_id {class_id} not in class_ids: {class_ids} [path: {info["path"]}, divided: {divided}]'
             if class_id in self.class_ids:
                 for split_mask in current_mask_list:
+                    assert np.all(np.logical_or(split_mask == 1, split_mask == 0)), 'masks can only be zero or one'
                     masks.append(split_mask)
                     class_ids.append(class_id)
         if masks:
