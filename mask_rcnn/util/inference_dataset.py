@@ -160,7 +160,9 @@ class InferenceDataset(CachedDataset):
             'bus',
             'train',
             'motorcycle',
-            'bicycle'
+            'bicycle',
+            'traffic light',
+            'traffic sign'
         ]
         allowed_labels = [label for label in labels if label.name in allowed_label_names]
 

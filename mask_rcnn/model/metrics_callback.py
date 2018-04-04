@@ -11,10 +11,11 @@ from mask_rcnn.model.data_generator import parallel_generator
 
 
 class MetricsCallback(keras.callbacks.Callback):
-    def __init__(self, config, validation_sequence, num_images, verbose=False):
+    def __init__(self, config, validation_sequence, num_images, class_names, verbose=False):
         super(keras.callbacks.Callback, self).__init__()
 
         self.num_classes = config.NUM_CLASSES
+        self.class_names = class_names
         self.validation_sequence = validation_sequence
         self.verbose = verbose
         self.num_workers = config.NUM_WORKERS
@@ -55,8 +56,9 @@ class MetricsCallback(keras.callbacks.Callback):
             if image_id not in self.used_image_ids:
                 self.used_image_ids.add(image_id)
                 new_future = executor.submit(_calculate_metrics,
-                                         pred_boxes=detections[i], gt_boxes=gt_boxes[i],
-                                         gt_class_ids=gt_class_ids[i], num_classes=self.num_classes)
+                                             pred_boxes=detections[i],
+                                             gt_boxes=gt_boxes[i], gt_class_ids=gt_class_ids[i],
+                                             num_classes=self.num_classes, class_names=self.class_names)
                 futures.append(new_future)
             else:
                 print(f'skipping image {image_id}, since it was already used for validation')
@@ -91,7 +93,7 @@ class MetricsCallback(keras.callbacks.Callback):
         metrics.add_to_log(logs)
 
 
-def _calculate_metrics(pred_boxes, gt_boxes, gt_class_ids, num_classes):
+def _calculate_metrics(pred_boxes, gt_boxes, gt_class_ids, num_classes, class_names):
     """
     Calculate box-wise IoU for all classes in a single image
     :param pred_boxes: list of predicted boxes.
@@ -129,7 +131,7 @@ def _calculate_metrics(pred_boxes, gt_boxes, gt_class_ids, num_classes):
         pred_boxes_by_class.append(current_boxes)
 
     # match predicted to ground truth boxes
-    metrics = Metrics(num_classes)
+    metrics = Metrics(num_classes, class_names)
     for class_id in range(num_classes):
         overlaps = _find_overlaps(gt_boxes_by_class[class_id], pred_boxes_by_class[class_id])
         ious, false_positive_pixels, false_negative_pixels = \
@@ -218,12 +220,13 @@ def _match_boxes(gt_boxes, pred_boxes, overlaps):
 
 
 class Metrics:
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, class_names):
         self.start_time = time.time()
         self.ious = [[] for i in range(num_classes)]
         self.false_positive_pixels = [[] for i in range(num_classes)]
         self.false_negative_pixels = [[] for i in range(num_classes)]
         self.num_classes = num_classes
+        self.class_names = class_names
 
     def add(self, class_id, ious, false_positive_pixels, false_negative_pixels):
         self.ious[class_id] += ious
@@ -250,9 +253,12 @@ class Metrics:
     def add_to_log(self, logs):
         self.print_time_passed()
         for class_id in range(self.num_classes):
-            logs[f'mean_iou_{class_id}'] = np.array(mean_or_zero(self.ious[class_id]))
-            logs[f'mean_fpp_{class_id}'] = np.array(mean_or_zero(self.false_positive_pixels[class_id]))
-            logs[f'mean_fnp_{class_id}'] = np.array(mean_or_zero(self.false_negative_pixels[class_id]))
+            logs[f'mean_iou_{class_id}_{self.class_names[class_id]}'] = np.array(
+                mean_or_zero(self.ious[class_id]))
+            logs[f'mean_fpp_{class_id}_{self.class_names[class_id]}'] = np.array(
+                mean_or_zero(self.false_positive_pixels[class_id]))
+            logs[f'mean_fnp_{class_id}_{self.class_names[class_id]}'] = np.array(
+                mean_or_zero(self.false_negative_pixels[class_id]))
 
     def print_time_passed(self):
         time_passed = time.time() - self.start_time

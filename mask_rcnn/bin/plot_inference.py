@@ -16,7 +16,7 @@ def main(dataset_name):
     sys.stdout.flush()
 
     output_dir = f'/output/{dataset_name}'
-    image_folder = f'/data/{dataset_name}'
+    image_folder = f'/data/{dataset_name}/images'
 
     class CityscapesConfig(Config):
         """Configuration for training on the cityscapes dataset.
@@ -32,7 +32,7 @@ def main(dataset_name):
         IMAGES_PER_GPU = 1
 
         # Number of classes (including background)
-        NUM_CLASSES = 8 + 1  # background + actual classes
+        NUM_CLASSES = 10 + 1  # background + actual classes
 
         # Use small images for faster training. Set the limits of the small side
         # the large side, and that determines the image shape.
@@ -63,8 +63,8 @@ def main(dataset_name):
 
     config = CityscapesConfig()
 
-    inference_cache_path = f'/output/{dataset_name}/mask_cache'
-    inference_cache_version = 2
+    inference_cache_path = f'/data/{dataset_name}/mask_cache'
+    inference_cache_version = 3
     # Training dataset
     dataset = InferenceDataset(dataset_name=dataset_name, image_folder=image_folder,
                                cache_path=inference_cache_path, version=inference_cache_version,
