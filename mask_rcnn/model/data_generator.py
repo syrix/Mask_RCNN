@@ -4,7 +4,7 @@ import math
 import random
 
 import numpy as np
-import scipy
+import skimage
 from keras.utils.data_utils import Sequence
 
 from mask_rcnn.util import utils
@@ -14,37 +14,29 @@ from mask_rcnn.util import utils
 #  Data Formatting
 ############################################################
 
-def compose_image_meta(image_id, image_shape, window, active_class_ids):
-    """Takes attributes of an image and puts them in one 1D array. Use
-    parse_image_meta() to parse the values back.
+def compose_image_meta(image_id, original_image_shape, image_shape,
+                       window, scale, active_class_ids):
+    """Takes attributes of an image and puts them in one 1D array.
 
     image_id: An int ID of the image. Useful for debugging.
-    image_shape: [height, width, channels]
+    original_image_shape: [H, W, C] before resizing or padding.
+    image_shape: [H, W, C] after resizing and padding
     window: (y1, x1, y2, x2) in pixels. The area of the image where the real
             image is (excluding the padding)
+    scale: The scaling factor applied to the original image (float32)
     active_class_ids: List of class_ids available in the dataset from which
         the image came. Useful if training on images from multiple datasets
         where not all classes are present in all datasets.
     """
     meta = np.array(
-        [image_id] +            # size=1
-        list(image_shape) +     # size=3
-        list(window) +          # size=4 (y1, x1, y2, x2) in image cooredinates
-        list(active_class_ids)  # size=num_classes
+        [image_id] +                  # size=1
+        list(original_image_shape) +  # size=3
+        list(image_shape) +           # size=3
+        list(window) +                # size=4 (y1, x1, y2, x2) in image cooredinates
+        [scale] +                     # size=1
+        list(active_class_ids)        # size=num_classes
     )
     return meta
-
-
-# Two functions (for Numpy and TF) to parse image_meta tensors.
-def parse_image_meta(meta):
-    """Parses an image info Numpy array to its components.
-    See compose_image_meta() for more details.
-    """
-    image_id = meta[:, 0]
-    image_shape = meta[:, 1:4]
-    window = meta[:, 4:8]   # (y1, x1, y2, x2) window of image in in pixels
-    active_class_ids = meta[:, 8:]
-    return image_id, image_shape, window, active_class_ids
 
 
 def parse_image_meta_graph(meta):
@@ -52,12 +44,23 @@ def parse_image_meta_graph(meta):
     See compose_image_meta() for more details.
 
     meta: [batch, meta length] where meta length depends on NUM_CLASSES
+
+    Returns a dict of the parsed tensors.
     """
     image_id = meta[:, 0]
-    image_shape = meta[:, 1:4]
-    window = meta[:, 4:8]
-    active_class_ids = meta[:, 8:]
-    return [image_id, image_shape, window, active_class_ids]
+    original_image_shape = meta[:, 1:4]
+    image_shape = meta[:, 4:7]
+    window = meta[:, 7:11]  # (y1, x1, y2, x2) window of image in pixels
+    scale = meta[:, 11]
+    active_class_ids = meta[:, 12:]
+    return {
+        "image_id": image_id,
+        "original_image_shape": original_image_shape,
+        "image_shape": image_shape,
+        "window": window,
+        "scale": scale,
+        "active_class_ids": active_class_ids,
+    }
 
 
 def mold_image(images, config):
@@ -77,12 +80,15 @@ def unmold_image(normalized_images, config):
 #  Data Generator
 ############################################################
 
-def load_image_gt(dataset, config, image_id, augment=False,
+def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
                   use_mini_mask=False):
     """Load and return ground truth data for an image (image, mask, bounding boxes).
 
-    augment: If true, apply random image augmentation. Currently, only
-        horizontal flipping is offered.
+    augment: (Depricated. Use augmentation instead). If true, apply random
+        image augmentation. Currently, only horizontal flipping is offered.
+    augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
+        For example, passing imgaug.augmenters.Fliplr(0.5) flips images
+        right/left 50% of the time.
     use_mini_mask: If False, returns full-size masks that are the same height
         and width as the original image. These can be big, for example
         1024x1024x100 (for 100 instances). Mini masks are smaller, typically,
@@ -101,20 +107,58 @@ def load_image_gt(dataset, config, image_id, augment=False,
     # Load image and mask
     image = dataset.load_image(image_id)
     mask, class_ids = dataset.load_mask(image_id)
-    shape = image.shape
+    original_shape = image.shape
     image, window, scale, padding = utils.resize_image(
         image,
         min_dim=config.IMAGE_MIN_DIM,
         max_dim=config.IMAGE_MAX_DIM,
-        padding=config.IMAGE_PADDING)
+        mode=config.IMAGE_RESIZE_MODE)
     mask = utils.resize_mask(mask, scale, padding)
 
     # Random horizontal flips.
+    # TODO: will be removed in a future update in favor of augmentation
     if augment:
+        logging.warning("'augment' is depricated. Use 'augmentation' instead.")
         if random.randint(0, 1):
             image = np.fliplr(image)
             mask = np.fliplr(mask)
 
+    # Augmentation
+    # This requires the imgaug lib (https://github.com/aleju/imgaug)
+    if augmentation:
+        import imgaug
+
+        # Augmentors that are safe to apply to masks
+        # Some, such as Affine, have settings that make them unsafe, so always
+        # test your augmentation on masks
+        MASK_AUGMENTERS = ["Sequential", "SomeOf", "OneOf", "Sometimes",
+                           "Fliplr", "Flipud", "CropAndPad",
+                           "Affine", "PiecewiseAffine"]
+
+        def hook(images, augmenter, parents, default):
+            """Determines which augmenters to apply to masks."""
+            return (augmenter.__class__.__name__ in MASK_AUGMENTERS)
+
+        # Store shapes before augmentation to compare
+        image_shape = image.shape
+        mask_shape = mask.shape
+        # Make augmenters deterministic to apply similarly to images and masks
+        det = augmentation.to_deterministic()
+        image = det.augment_image(image)
+        # Change mask to np.uint8 because imgaug doesn't support np.bool
+        mask = det.augment_image(mask.astype(np.uint8),
+                                 hooks=imgaug.HooksImages(activator=hook))
+        # Verify that shapes didn't change
+        assert image.shape == image_shape, "Augmentation shouldn't change image size"
+        assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
+        # Change mask back to bool
+        mask = mask.astype(np.bool)
+
+    # Note that some boxes might be all zeros if the corresponding mask got cropped out.
+    # and here is to filter them out
+    _idx = np.sum(mask, axis=(0, 1)) > 0
+    mask = mask[:, :, _idx]
+    class_ids = class_ids[_idx]
     # Bounding boxes. Note that some boxes might be all zeros
     # if the corresponding mask got cropped out.
     # bbox: [num_instances, (y1, x1, y2, x2)]
@@ -132,7 +176,8 @@ def load_image_gt(dataset, config, image_id, augment=False,
         mask = utils.minimize_mask(bbox, mask, config.MINI_MASK_SHAPE)
 
     # Image meta data
-    image_meta = compose_image_meta(image_id, shape, window, active_class_ids)
+    image_meta = compose_image_meta(image_id, original_shape, image.shape,
+                                    window, scale, active_class_ids)
 
     return image, image_meta, class_ids, bbox, mask
 
@@ -153,7 +198,7 @@ def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
     rois: [TRAIN_ROIS_PER_IMAGE, (y1, x1, y2, x2)]
     class_ids: [TRAIN_ROIS_PER_IMAGE]. Integer class IDs.
     bboxes: [TRAIN_ROIS_PER_IMAGE, NUM_CLASSES, (y, x, log(h), log(w))]. Class-specific
-            bbox refinments.
+            bbox refinements.
     masks: [TRAIN_ROIS_PER_IMAGE, height, width, NUM_CLASSES). Class specific masks cropped
            to bbox boundaries and resized to neural network output size.
     """
@@ -259,10 +304,10 @@ def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
     pos_ids = np.where(roi_gt_class_ids > 0)[0]
     bboxes[pos_ids, roi_gt_class_ids[pos_ids]] = utils.box_refinement(
         rois[pos_ids], roi_gt_boxes[pos_ids, :4])
-    # Normalize bbox refinments
+    # Normalize bbox refinements
     bboxes /= config.BBOX_STD_DEV
 
-    # Generate class-specific target masks.
+    # Generate class-specific target masks
     masks = np.zeros((config.TRAIN_ROIS_PER_IMAGE, config.MASK_SHAPE[0], config.MASK_SHAPE[1], config.NUM_CLASSES),
                      dtype=np.float32)
     for i in pos_ids:
@@ -280,16 +325,15 @@ def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
             gt_h = gt_y2 - gt_y1
             # Resize mini mask to size of GT box
             placeholder[gt_y1:gt_y2, gt_x1:gt_x2] = \
-                np.round(scipy.misc.imresize(class_mask.astype(float), (gt_h, gt_w),
-                                             interp='nearest') / 255.0).astype(bool)
+                np.round(skimage.transform.resize(
+                    class_mask, (gt_h, gt_w), order=1, mode="constant")).astype(bool)
             # Place the mini batch in the placeholder
             class_mask = placeholder
 
         # Pick part of the mask and resize it
         y1, x1, y2, x2 = rois[i].astype(np.int32)
         m = class_mask[y1:y2, x1:x2]
-        mask = scipy.misc.imresize(
-            m.astype(float), config.MASK_SHAPE, interp='nearest') / 255.0
+        mask = skimage.transform.resize(m, config.MASK_SHAPE, order=1, mode="constant")
         masks[i, :, :, class_id] = mask
 
     return rois, roi_gt_class_ids, bboxes, masks
@@ -375,7 +419,7 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     # to match the corresponding GT boxes.
     ids = np.where(rpn_match == 1)[0]
     ix = 0  # index into rpn_bbox
-    # TODO: use box_refinment() rather than duplicating the code here
+    # TODO: use box_refinement() rather than duplicating the code here
     for i, a in zip(ids, anchors[ids]):
         # Closest gt box (it might have IoU < 0.7)
         gt = gt_boxes[anchor_iou_argmax[i]]
@@ -480,7 +524,7 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
     return rois
 
 
-def get_image(dataset, image_id, config, augment=True):
+def get_image(dataset, image_id, config, augment=False, augmentation=None):
     """
     Loads a single image.
     :return: Either the input and output arrays for one image or False if the image could not be loaded
@@ -494,9 +538,10 @@ def get_image(dataset, image_id, config, augment=True):
                                              config.RPN_ANCHOR_STRIDE)
 
     # Get GT bounding boxes and masks for image.
-    image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
-        load_image_gt(dataset, config, image_id, augment=augment,
-                      use_mini_mask=config.USE_MINI_MASK)
+    image, image_meta, gt_class_ids, gt_boxes, gt_masks = load_image_gt(dataset, config, image_id,
+                                                                        augment=augment,
+                                                                        augmentation=augmentation,
+                                                                        use_mini_mask=config.USE_MINI_MASK)
 
     # Skip images that have no instances. This can happen in cases
     # where we train on a subset of classes and the image doesn't
@@ -547,7 +592,7 @@ def get_image(dataset, image_id, config, augment=True):
     return inputs, outputs
 
 
-def get_image_batch(dataset, image_ids, batch_size, config, augment=True):
+def get_image_batch(dataset, image_ids, batch_size, config, augment=False, augmentation=None):
     """
     Loads a batch of `batch_size` images. Will try to load the first `batch_size` from `image_ids` first.
     If some images could not be loaded they will be replaced with ids from `image_ids` in order of appearance.
@@ -573,7 +618,8 @@ def get_image_batch(dataset, image_ids, batch_size, config, augment=True):
 
         # Try to get the image. If it fails try the next one.
         try:
-            result = get_image(dataset=dataset, image_id=image_id, config=config, augment=augment)
+            result = get_image(dataset=dataset, image_id=image_id,
+                               config=config,augment=augment, augmentation=augmentation)
             if result:
                 new_inputs, new_outputs = result
                 # first image?
@@ -611,16 +657,18 @@ def get_image_batch(dataset, image_ids, batch_size, config, augment=True):
     return batch_inputs, batch_outputs, image_index
 
 
-def data_generator(dataset, config, shuffle=True, augment=True, random_rois=0,
-                   batch_size=1, num_skipped_batches=0, detection_targets=False):
+def data_generator(dataset, config, shuffle=True, augment=False, augmentation=None,
+                   random_rois=0, batch_size=1, detection_targets=False):
     """A generator that returns images and corresponding target class ids,
     bounding box deltas, and masks.
-
     dataset: The Dataset object to pick data from
     config: The model config object
     shuffle: If True, shuffles the samples before every epoch
-    augment: If True, applies image augmentation to images (currently only
-             horizontal flips are supported)
+    augment: (Depricated. Use augmentation instead). If true, apply random
+        image augmentation. Currently, only horizontal flipping is offered.
+    augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
+        For example, passing imgaug.augmenters.Fliplr(0.5) flips images
+        right/left 50% of the time.
     random_rois: If > 0 then generate proposals to be used to train the
                  network classifier and mask heads. Useful if training
                  the Mask RCNN part without the RPN.
@@ -628,13 +676,12 @@ def data_generator(dataset, config, shuffle=True, augment=True, random_rois=0,
     detection_targets: If True, generate detection targets (class IDs, bbox
         deltas, and masks). Typically for debugging or visualizations because
         in trainig detection targets are generated by DetectionTargetLayer.
-
     Returns a Python generator. Upon calling next() on it, the
     generator returns two lists, inputs and outputs. The containtes
     of the lists differs depending on the received arguments:
     inputs list:
     - images: [batch, H, W, C]
-    - image_meta: [batch, size of image meta]
+    - image_meta: [batch, (meta data)] Image details. See compose_image_meta()
     - rpn_match: [batch, N] Integer (1=positive anchor, -1=negative, 0=neutral)
     - rpn_bbox: [batch, N, (dy, dx, log(dh), log(dw))] Anchor bbox deltas.
     - gt_class_ids: [batch, MAX_GT_INSTANCES] Integer class IDs
@@ -642,7 +689,6 @@ def data_generator(dataset, config, shuffle=True, augment=True, random_rois=0,
     - gt_masks: [batch, height, width, MAX_GT_INSTANCES]. The height and width
                 are those of the image unless use_mini_mask is True, in which
                 case they are defined in MINI_MASK_SHAPE.
-
     outputs list: Usually empty in regular training. But if detection_targets
         is True then the outputs list contains target class_ids, bbox deltas,
         and masks.
@@ -674,12 +720,12 @@ class TrainingSequence(Sequence):
     """
     Keras sequence to load images in parallel during training
     """
-    def __init__(self, dataset, batch_size, config, shuffle=True, augment=True):
+    def __init__(self, dataset, batch_size, config, shuffle=True, augmentation=None):
         self.dataset = dataset
         self.batch_size = batch_size
         self.config = config
         self.shuffle = shuffle
-        self.augment = augment
+        self.augmentation = augmentation
 
         self.num_images = len(dataset.image_ids)
 
@@ -702,7 +748,8 @@ class TrainingSequence(Sequence):
         image_index = idx * self.batch_size
         all_image_ids = self.all_image_ids[image_index:]
         inputs, outputs, _ = get_image_batch(dataset=self.dataset, image_ids=all_image_ids,
-                                             batch_size=self.batch_size, config=self.config, augment=self.augment)
+                                             batch_size=self.batch_size, config=self.config,
+                                             augmentation=self.augmentation)
         return inputs, outputs
 
     def on_epoch_end(self):
