@@ -1,6 +1,8 @@
 import os
 import random
 random.seed(42)
+
+import imgaug
 import numpy as np
 np.random.seed(42)
 
@@ -52,10 +54,10 @@ class CityscapesConfig(Config):
     MEAN_PIXEL = np.array((72.78044, 83.21195, 73.45286))
 
     # Use full epoche for each dataset
-    STEPS_PER_EPOCH = None
+    STEPS_PER_EPOCH = 10
 
     # Use full data for validation
-    VALIDATION_STEPS = None
+    VALIDATION_STEPS = 10
 
     LEARNING_RATE = 0.002
 
@@ -63,7 +65,7 @@ class CityscapesConfig(Config):
     LEARNING_ADAM_EPSILON = 1e-8
     LEARNING_ADAM_USE_AMSGRAD = True
 
-    MAX_METRICS_IMAGES = 500
+    MAX_METRICS_IMAGES = 10
 
     NUM_WORKERS = 14
 
@@ -75,7 +77,7 @@ config = CityscapesConfig()
 config.display()
 
 cityscapes_cache_path = '/data/mask-rcnn/my_cityscapes/mask_cache'
-cityscapes_cache_version = 4
+cityscapes_cache_version = 5
 
 # Training dataset
 dataset_train = CityscapesDataset(cache_path=cityscapes_cache_path, version=cityscapes_cache_version,
@@ -120,7 +122,9 @@ num_epochs = 5  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE,
             epochs=num_epochs,
-            layers='heads', optimizer_type=optimizer)
+            layers='heads',
+            augmentation=imgaug.augmenters.Fliplr(0.5),
+            optimizer_type=optimizer)
 
 # Fine tune all layers
 # Passing layers="all" trains all layers. You can also
@@ -130,13 +134,17 @@ num_epochs = 10  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE,
             epochs=num_epochs,
-            layers="all", optimizer_type=optimizer)
+            layers="all",
+            augmentation=imgaug.augmenters.Fliplr(0.5),
+            optimizer_type=optimizer)
 
 num_epochs = 15  # TODO
 model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE / 10,
             epochs=num_epochs,
-            layers="all", optimizer_type=optimizer)
+            layers="all",
+            augmentation=imgaug.augmenters.Fliplr(0.5),
+            optimizer_type=optimizer)
 
 
 

@@ -281,7 +281,7 @@ class CityscapesDataset(CachedDataset):
         if masks:
             masks = np.concatenate(masks, axis=2)
         else:
-            masks = np.array([]).reshape((image_height, image_width, 0))
+            masks = np.array([], np.int32).reshape((image_height, image_width, 0))
 
         assert masks.shape == (image_height, image_width, len(class_ids))
         return masks, np.array(class_ids)

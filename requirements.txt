@@ -6,3 +6,5 @@ recordclass==0.5
 tqdm==4.19.*
 h5py==2.7.*
 ipython==6.2.*
+imgaug==0.2.*
+opencv-python==3.4.0.12

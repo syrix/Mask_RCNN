@@ -4,7 +4,7 @@ import math
 import random
 
 import numpy as np
-import skimage
+import skimage.transform
 from keras.utils.data_utils import Sequence
 
 from mask_rcnn.util import utils
@@ -330,11 +330,16 @@ def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
             # Place the mini batch in the placeholder
             class_mask = placeholder
 
+        print('before resize')
+        import sys
+        sys.stdout.flush()
         # Pick part of the mask and resize it
         y1, x1, y2, x2 = rois[i].astype(np.int32)
         m = class_mask[y1:y2, x1:x2]
         mask = skimage.transform.resize(m, config.MASK_SHAPE, order=1, mode="constant")
         masks[i, :, :, class_id] = mask
+        print('after resize')
+        sys.stdout.flush()
 
     return rois, roi_gt_class_ids, bboxes, masks
 

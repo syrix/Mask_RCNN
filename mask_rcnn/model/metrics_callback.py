@@ -44,7 +44,11 @@ class MetricsCallback(keras.callbacks.Callback):
         start_time = time.time()
 
         y_pred = self.model.predict_on_batch(inputs)
-        detections = y_pred[14]
+        # TODO detections are floats [0,1] instead of ints
+        # print(f'pred: {len(y_pred)}')
+        # print(f'det: {len(y_pred[14])}')
+        # print(f'det_full: {y_pred[14]}')
+        detections = y_pred[14]  # TODO upscale
 
         time_passed = time.time() - start_time
         if self.verbose:
@@ -65,7 +69,7 @@ class MetricsCallback(keras.callbacks.Callback):
         return futures
 
     def on_epoch_end(self, epoch, logs={}):
-        metrics = Metrics(self.num_classes)
+        metrics = Metrics(self.num_classes, self.class_names)
         generator = self._create_generator()
         max_num_futures = self.num_workers + self.gpu_count
 
@@ -165,8 +169,13 @@ def _find_overlaps(gt_boxes, pred_boxes):
                               max_x=min(gt_box.max_x, pred_box.max_x),
                               gt_index=gt_index, pred_index=pred_index,
                               iou=0, false_positive_pixels=0, false_negative_pixels=0)
+            import sys
+            print(f'TESTSTESET: {gt_box}->{pred_box}')
+            sys.stdout.flush()
             # Note that max_x and max_y are not part of the box => we need '>' not '>='
             if overlap.max_y > overlap.min_y and overlap.max_x > overlap.min_x:
+                print('YAY')
+                sys.stdout.flush()
                 shared_area = (overlap.max_y - overlap.min_y) * (overlap.max_x - overlap.min_x)
 
                 gt_area = (gt_box.max_y - gt_box.min_y) * (gt_box.max_x - gt_box.min_x)
@@ -174,12 +183,16 @@ def _find_overlaps(gt_boxes, pred_boxes):
                 total_area = gt_area + pred_area - shared_area
 
                 overlap.iou = shared_area / total_area
+                #if overlap.iou != 0:
+                print(f'IOU: {overlap.iou} = {shared_area} / {total_area}')
+                sys.stdout.flush()
                 # false positive pixels are pixels that were predicted, but are not in the ground truth
                 overlap.false_positive_pixels = pred_area - shared_area
                 # false negative pixels are pixels that are in the ground truth, but were not predicted
                 overlap.false_negative_pixels = gt_area - shared_area
                 overlaps.append(overlap)
     overlaps = sorted(overlaps, key=attrgetter('iou'), reverse=True)
+    print(f'LEN: {len(overlaps)}')
     return overlaps
 
 
